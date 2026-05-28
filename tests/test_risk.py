@@ -53,3 +53,10 @@ def test_risk_rejects_when_open_risk_full():
     decision = risk.evaluate(make_signal(edge=0.2), PortfolioState(20.0, 5.0))
     assert not decision.approved
     assert "max open risk" in decision.reason
+
+
+def test_risk_rejects_when_daily_loss_limit_is_hit():
+    risk = RiskManager(RiskConfig(daily_loss_limit_dollars=2.0))
+    decision = risk.evaluate(make_signal(edge=0.2), PortfolioState(20.0, 0.0, realized_pnl_today_dollars=-2.01))
+    assert not decision.approved
+    assert "daily loss" in decision.reason

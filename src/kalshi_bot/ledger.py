@@ -69,9 +69,10 @@ class PaperLedger:
                 INSERT INTO orders (
                     signal_id, created_at, ticker, book_side, outcome, count, price,
                     max_loss_dollars, client_order_id, mode, status, exchange_order_id,
-                    fill_count, remaining_count, average_fill_price, average_fee_paid
+                    fill_count, remaining_count, average_fill_price, average_fee_paid,
+                    updated_at
                 )
-                VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
                 (
                     signal_id,
@@ -123,6 +124,29 @@ class PaperLedger:
                 selected_statuses,
             )
             return float(cursor.fetchone()[0])
+
+    def realized_pnl_today(self, mode: TradeMode | None = None) -> float:
+        mode_filter = ""
+        params: list[str] = []
+        if mode is not None:
+            mode_filter = "AND mode=?"
+            params.append(mode.value)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(net_pnl_dollars), 0)
+                FROM orders
+                WHERE net_pnl_dollars IS NOT NULL
+                  {mode_filter}
+                  AND (
+                    status IN ('paper_settled', 'live_closed', 'live_settled')
+                    OR COALESCE(exit_fill_count, 0) > 0
+                  )
+                  AND date(COALESCE(settled_at, updated_at, created_at), 'localtime') = date('now', 'localtime')
+                """,
+                params,
+            ).fetchone()
+        return float(row[0])
 
     def has_live_exposure(self, ticker: str, outcome: str | None = None) -> bool:
         params: list[str] = [ticker]
@@ -278,7 +302,8 @@ class PaperLedger:
                     fill_count=?,
                     remaining_count=?,
                     average_fill_price=?,
-                    average_fee_paid=?
+                    average_fee_paid=?,
+                    updated_at=datetime('now')
                 WHERE id=?
                 """,
                 (
@@ -352,6 +377,7 @@ class PaperLedger:
                     gross_pnl_dollars=COALESCE(gross_pnl_dollars, 0) + ?,
                     fee_estimate_dollars=COALESCE(fee_estimate_dollars, 0) + ?,
                     net_pnl_dollars=COALESCE(net_pnl_dollars, 0) + ?,
+                    updated_at=datetime('now'),
                     status=CASE
                         WHEN ?='exit_executed' THEN 'live_closed'
                         ELSE status
@@ -398,7 +424,8 @@ class PaperLedger:
                     settled_at=?,
                     gross_pnl_dollars=?,
                     fee_estimate_dollars=?,
-                    net_pnl_dollars=?
+                    net_pnl_dollars=?,
+                    updated_at=datetime('now')
                 WHERE id=?
                 """,
                 (
@@ -433,7 +460,8 @@ class PaperLedger:
                     settled_at=?,
                     gross_pnl_dollars=?,
                     fee_estimate_dollars=?,
-                    net_pnl_dollars=?
+                    net_pnl_dollars=?,
+                    updated_at=datetime('now')
                 WHERE id=?
                 """,
                 (
@@ -578,6 +606,7 @@ class PaperLedger:
                     "exit_fee_paid": "REAL",
                     "take_profit_threshold": "REAL",
                     "exit_status": "TEXT",
+                    "updated_at": "TEXT",
                 },
             )
 

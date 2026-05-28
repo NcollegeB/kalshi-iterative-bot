@@ -190,3 +190,4 @@ def test_exit_execution_records_realized_pnl_and_clears_risk(tmp_path: Path):
             (order_id,),
         ).fetchone()
     assert row == ("live_closed", 1.1, 0.03, 1.07)
+    assert ledger.realized_pnl_today(TradeMode.LIVE) == 1.07

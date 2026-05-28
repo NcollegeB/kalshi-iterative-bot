@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from kalshi_bot.btc_model import (
+    current_coinbase_btc_spot,
     generate_btc_probability_rows,
     parse_threshold_strike,
     probability_above_strike,
@@ -104,3 +105,17 @@ def test_write_probability_csv(tmp_path: Path):
     write_probability_csv(output, rows)
 
     assert output.read_text().startswith("ticker,estimated_probability,notes\n")
+
+
+def test_current_coinbase_btc_spot_treats_timeout_as_fetch_failure(monkeypatch):
+    def raise_timeout(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("kalshi_bot.btc_model.urlopen", raise_timeout)
+
+    try:
+        current_coinbase_btc_spot()
+    except RuntimeError as exc:
+        assert "Unable to fetch BTC spot" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")

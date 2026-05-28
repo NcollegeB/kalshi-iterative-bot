@@ -178,11 +178,23 @@ def parse_log_events(path: Path, *, limit: int = 200) -> list[dict[str, Any]]:
 
 
 def tail_lines(path: Path, limit: int) -> list[str]:
-    if not path.exists():
+    if limit <= 0 or not path.exists():
         return []
-    with path.open("r", errors="replace") as handle:
-        lines = handle.readlines()
-    return lines[-limit:]
+    chunk_size = 8192
+    chunks: list[bytes] = []
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        position = handle.tell()
+        newline_count = 0
+        while position > 0 and newline_count <= limit:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+    data = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+    return data.splitlines()[-limit:]
 
 
 def loop_summary(events: list[dict[str, Any]]) -> dict[str, Any]:

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import NormalDist
 from typing import Protocol
+from socket import timeout as SocketTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from urllib.request import urlopen
@@ -62,7 +63,7 @@ def current_coinbase_btc_spot(timeout_seconds: int = 5) -> float:
             for key in price_path:
                 value = value[key]  # type: ignore[index]
             return float(value)
-        except (HTTPError, URLError, KeyError, TypeError, ValueError) as exc:
+        except (HTTPError, URLError, TimeoutError, SocketTimeout, KeyError, TypeError, ValueError) as exc:
             errors.append(f"{url}: {exc}")
     raise RuntimeError("Unable to fetch BTC spot: " + "; ".join(errors))
 

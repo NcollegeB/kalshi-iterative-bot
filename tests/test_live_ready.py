@@ -2,7 +2,14 @@ from argparse import Namespace
 
 import pytest
 
-from kalshi_bot.cli import _balance_dollars, _resolve_mode, _scan_args_for_loop, _take_profit_args_for_loop, run_loop
+from kalshi_bot.cli import (
+    _balance_dollars,
+    _resolve_mode,
+    _scan_args_for_loop,
+    _take_profit_args_for_loop,
+    run_loop,
+    run_refresh_btc,
+)
 from kalshi_bot.models import TradeMode
 
 
@@ -40,3 +47,22 @@ def test_loop_dry_runs_live_actions_when_trading_is_paused():
 
     assert _scan_args_for_loop(args, trading_active=False).dry_run is True
     assert _take_profit_args_for_loop(args, trading_active=False).execute is False
+
+
+def test_refresh_btc_clears_probability_file_on_market_data_error(tmp_path, monkeypatch):
+    output = tmp_path / "probabilities.csv"
+    args = Namespace(
+        spot=None,
+        output=output,
+        series="KXBTCD",
+        limit=100,
+        pages=1,
+        annual_vol=0.55,
+        probability_shrink=0.75,
+        max_rows=12,
+        dry_run=False,
+    )
+    monkeypatch.setattr("kalshi_bot.cli.current_coinbase_btc_spot", lambda: (_ for _ in ()).throw(RuntimeError("down")))
+
+    assert run_refresh_btc(args, None, None) == 0
+    assert output.read_text() == "ticker,estimated_probability,notes\n"

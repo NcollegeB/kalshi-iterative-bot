@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from kalshi_bot.dashboard import calibration_summary, parse_log_events, parse_note_metrics, read_probability_rows
+from kalshi_bot.dashboard import calibration_summary, parse_log_events, parse_note_metrics, read_probability_rows, tail_lines
 from kalshi_bot.ledger import PaperLedger
 from kalshi_bot.models import BookSide, OutcomeSide, ProposedOrder, Signal, TradeMode
 
@@ -36,6 +36,13 @@ def test_parse_log_events_handles_python_dict_lines(tmp_path: Path):
     path.write_text("noise\n{'loop_iteration': 7, 'signals': 1}\n")
 
     assert parse_log_events(path, limit=10) == [{"loop_iteration": 7, "signals": 1}]
+
+
+def test_tail_lines_reads_only_requested_suffix(tmp_path: Path):
+    path = tmp_path / "live.log"
+    path.write_text("\n".join(str(index) for index in range(20)) + "\n")
+
+    assert tail_lines(path, limit=3) == ["17", "18", "19"]
 
 
 def test_calibration_summary_scores_settled_predictions(tmp_path: Path):

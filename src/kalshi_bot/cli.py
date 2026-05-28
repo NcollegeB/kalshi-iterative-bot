@@ -213,6 +213,7 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
     state = PortfolioState(
         bankroll_dollars=config.risk.bankroll_dollars,
         open_risk_dollars=ledger.open_risk(mode),
+        realized_pnl_today_dollars=ledger.realized_pnl_today(mode),
     )
 
     submitted = 0
@@ -405,7 +406,22 @@ def _live_loop_startup_ready(config, client: KalshiClient) -> dict[str, Any]:
 
 
 def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> int:
-    spot = args.spot if args.spot is not None else current_coinbase_btc_spot()
+    try:
+        spot = args.spot if args.spot is not None else current_coinbase_btc_spot()
+    except RuntimeError as exc:
+        if not args.dry_run:
+            write_probability_csv(args.output, [])
+        print(
+            {
+                "dry_run": args.dry_run,
+                "output": str(args.output),
+                "series": args.series,
+                "rows": 0,
+                "market_data_error": str(exc),
+            },
+            flush=True,
+        )
+        return 0
     rows = generate_btc_probability_rows(
         client,
         spot=spot,
