@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from .adaptive_risk import evaluate_adaptive_risk
 from .btc_model import current_coinbase_btc_spot, generate_btc_probability_rows, write_probability_csv
 from .config import DATA_DIR, load_config
 from .crypto_model import DEFAULT_ASSETS, generate_crypto_probability_rows, write_crypto_probability_csv
-from .dashboard import serve_dashboard
+from .dashboard import performance_breakdown, serve_dashboard
 from .kalshi_client import KalshiApiError, KalshiClient
 from .ledger import PaperLedger
 from .models import BookSide, OutcomeSide, ProposedOrder, TradeMode
@@ -116,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     take_profit_parser.add_argument("--min-profit-cents", type=float, default=0.0)
     take_profit_parser.add_argument("--execute", action="store_true")
     subparsers.add_parser("status", help="Show local paper ledger summary")
+    performance_report_parser = subparsers.add_parser("performance-report", help="Show realized PnL/calibration buckets")
+    performance_report_parser.add_argument("--mode", choices=["all", "paper", "demo", "live"], default="all")
     subparsers.add_parser("health", help="Check public Kalshi API status")
     dashboard_parser = subparsers.add_parser("dashboard", help="Run a read-only local dashboard")
     dashboard_parser.add_argument("--host", default="127.0.0.1")
@@ -133,6 +136,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         print(ledger.summary())
+        return 0
+
+    if args.command == "performance-report":
+        mode_filter = None if args.mode == "all" else args.mode
+        print(json.dumps(performance_breakdown(config.db_path, mode=mode_filter), indent=2))
         return 0
 
     if args.command == "scan":

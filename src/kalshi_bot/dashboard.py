@@ -100,6 +100,7 @@ def build_snapshot(config: AppConfig) -> dict[str, Any]:
         "orders": recent_orders(config.db_path),
         "signals": recent_signals(config.db_path),
         "performance": performance_summary(config.db_path),
+        "performance_breakdown": performance_breakdown(config.db_path),
         "calibration": calibration_summary(config.db_path),
         "events": logs[-80:],
     }
@@ -330,6 +331,114 @@ def performance_summary(db_path: Path) -> dict[str, Any]:
     return {"by_status": by_status, "settled": settled, "live_realized": live_summary}
 
 
+def performance_breakdown(db_path: Path, mode: str | None = None) -> dict[str, Any]:
+    rows = _realized_performance_rows(db_path, mode=mode)
+    for row in rows:
+        row["asset_bucket"] = str(row.get("asset") or extract_asset(str(row.get("ticker") or "")))
+        row["side_bucket"] = str(row.get("outcome") or "-")
+        row["horizon_bucket"] = horizon_bucket(row.get("time_to_close_minutes"))
+        row["spread_bucket"] = spread_bucket(row.get("spread"))
+    segments = _group_performance(
+        rows,
+        "segment",
+        lambda row: " / ".join(
+            [
+                row["asset_bucket"],
+                row["side_bucket"],
+                row["horizon_bucket"],
+                row["spread_bucket"],
+            ]
+        ),
+    )
+    ranked_segments = sorted(segments, key=lambda row: (float(row["net_pnl"]), int(row["count"])), reverse=True)
+    return {
+        "mode_filter": mode or "all",
+        "overall": _performance_metrics(rows),
+        "by_mode": _group_performance(rows, "mode", lambda row: row.get("mode") or "-"),
+        "by_asset": _group_performance(rows, "asset", lambda row: row["asset_bucket"]),
+        "by_side": _group_performance(rows, "side", lambda row: row["side_bucket"]),
+        "by_horizon": _group_performance(rows, "horizon", lambda row: row["horizon_bucket"]),
+        "by_spread": _group_performance(rows, "spread", lambda row: row["spread_bucket"]),
+        "top_segments": ranked_segments[:10],
+        "bottom_segments": list(reversed(ranked_segments[-10:])),
+    }
+
+
+def _realized_performance_rows(db_path: Path, mode: str | None = None) -> list[dict[str, Any]]:
+    mode_filter = ""
+    params: list[Any] = []
+    if mode is not None:
+        mode_filter = "AND o.mode=?"
+        params.append(mode)
+    return _query_dicts(
+        db_path,
+        f"""
+        SELECT o.id, o.ticker, o.mode, o.status, o.outcome, o.count, o.price,
+               o.max_loss_dollars, o.gross_pnl_dollars, o.fee_estimate_dollars,
+               o.net_pnl_dollars, o.settlement_result, o.exit_average_fill_price,
+               o.average_fill_price, s.asset, s.estimated_probability,
+               s.reference_price, s.edge, s.spread, s.time_to_close_minutes
+        FROM orders o
+        JOIN signals s ON s.id=o.signal_id
+        WHERE o.net_pnl_dollars IS NOT NULL
+          {mode_filter}
+          AND (
+            o.status IN ('paper_settled', 'live_closed', 'live_settled')
+            OR COALESCE(o.exit_fill_count, 0) > 0
+          )
+        ORDER BY COALESCE(o.settled_at, o.updated_at, o.created_at), o.id
+        """,
+        params,
+    )
+
+
+def _group_performance(rows: list[dict[str, Any]], group: str, key_fn) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(key_fn(row) or "-"), []).append(row)
+    report = [{"group": group, "bucket": bucket, **_performance_metrics(bucket_rows)} for bucket, bucket_rows in grouped.items()]
+    report.sort(key=lambda row: (-int(row["count"]), str(row["bucket"])))
+    return report
+
+
+def _performance_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    count = len(rows)
+    final_rows = [row for row in rows if row.get("settlement_result") not in (None, "")]
+    wins = sum(1 for row in final_rows if str(row.get("settlement_result")) == str(row.get("outcome")))
+    max_loss = sum(_float(row.get("max_loss_dollars")) or 0.0 for row in rows)
+    gross_pnl = sum(_float(row.get("gross_pnl_dollars")) or 0.0 for row in rows)
+    fees = sum(_float(row.get("fee_estimate_dollars")) or 0.0 for row in rows)
+    net_pnl = sum(_float(row.get("net_pnl_dollars")) or 0.0 for row in rows)
+    calibration = _calibration_rows(
+        [
+            {
+                "estimated_probability": row.get("estimated_probability"),
+                "settlement_result": row.get("settlement_result"),
+                "outcome": row.get("outcome"),
+            }
+            for row in final_rows
+        ]
+    )
+    return {
+        "count": count,
+        "final_count": len(final_rows),
+        "wins": wins,
+        "win_rate": round(wins / len(final_rows), 4) if final_rows else None,
+        "max_loss": round(max_loss, 4),
+        "gross_pnl": round(gross_pnl, 4),
+        "fees": round(fees, 4),
+        "net_pnl": round(net_pnl, 4),
+        "return_pct": round(net_pnl / max_loss, 4) if max_loss > 0 else None,
+        "avg_edge": _average(rows, "edge"),
+        "avg_probability": _average(rows, "estimated_probability"),
+        "avg_price": _average(rows, "reference_price"),
+        "avg_spread": _average(rows, "spread"),
+        "avg_time_to_close_minutes": _average(rows, "time_to_close_minutes"),
+        "brier_score": calibration["brier_score"],
+        "log_loss": calibration["log_loss"],
+    }
+
+
 def calibration_summary(db_path: Path) -> dict[str, Any]:
     rows = _query_dicts(
         db_path,
@@ -373,13 +482,65 @@ def _calibration_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _query_dicts(db_path: Path, sql: str) -> list[dict[str, Any]]:
+def _query_dicts(db_path: Path, sql: str, params: list[Any] | tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def _average(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [_float(row.get(key)) for row in rows]
+    valid = [value for value in values if value is not None]
+    if not valid:
+        return None
+    return round(sum(valid) / len(valid), 4)
+
+
+def horizon_bucket(value: object) -> str:
+    minutes = _float(value)
+    if minutes is None:
+        return "unknown"
+    if minutes <= 10:
+        return "<=10m"
+    if minutes <= 30:
+        return "10-30m"
+    if minutes <= 60:
+        return "30-60m"
+    if minutes <= 240:
+        return "1-4h"
+    if minutes <= 1440:
+        return "4-24h"
+    return ">24h"
+
+
+def spread_bucket(value: object) -> str:
+    spread = _float(value)
+    if spread is None:
+        return "unknown"
+    if spread <= 0.02:
+        return "<=2c"
+    if spread <= 0.05:
+        return "2-5c"
+    if spread <= 0.10:
+        return "5-10c"
+    return ">10c"
+
+
+def extract_asset(ticker: str) -> str:
+    if ticker.startswith("KXBTCD"):
+        return "BTC"
+    if ticker.startswith("KXETHD"):
+        return "ETH"
+    if ticker.startswith("KXSOLD"):
+        return "SOL"
+    if ticker.startswith("KXXRPD"):
+        return "XRP"
+    if ticker.startswith("KXDOGED"):
+        return "DOGE"
+    return "-"
 
 
 def _latest_with(events: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
@@ -470,6 +631,19 @@ DASHBOARD_HTML = """<!doctype html>
           <table>
             <thead><tr><th>ID</th><th>Time</th><th>Asset</th><th>Ticker</th><th>Side</th><th>Prob</th><th>Price</th><th>Edge</th><th>Spread</th><th>Final</th><th>PnL</th><th>Status</th><th>Order</th><th>Reason</th></tr></thead>
             <tbody id="signalRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Performance Buckets</h2>
+          <span>realized PnL and calibration by signal group</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Group</th><th>Bucket</th><th>Trades</th><th>Final</th><th>Net PnL</th><th>Return</th><th>Win</th><th>Brier</th><th>Log Loss</th><th>Avg Edge</th><th>Avg Spread</th><th>Avg Horizon</th></tr></thead>
+            <tbody id="bucketRows"></tbody>
           </table>
         </div>
       </section>
@@ -756,6 +930,33 @@ function renderSnapshot(data) {
       <td>${escapeHtml(order)}</td>
       <td class="reason">${escapeHtml(row.risk_reason || row.reason || "")}</td>`;
   }, "No signal records yet.");
+
+  const buckets = data.performance_breakdown || {};
+  const bucketRows = [
+    ...(buckets.by_mode || []),
+    ...(buckets.by_asset || []),
+    ...(buckets.by_side || []),
+    ...(buckets.by_horizon || []),
+    ...(buckets.by_spread || [])
+  ];
+  setRows($("bucketRows"), bucketRows, (row) => {
+    const horizon = row.avg_time_to_close_minutes === null || row.avg_time_to_close_minutes === undefined
+      ? "-"
+      : `${num(row.avg_time_to_close_minutes, 1)}m`;
+    const pnlClass = Number(row.net_pnl || 0) < 0 ? "error" : "";
+    return `<td>${escapeHtml(row.group)}</td>
+      <td>${escapeHtml(row.bucket)}</td>
+      <td class="num">${row.count}</td>
+      <td class="num">${row.final_count}</td>
+      <td class="num ${pnlClass}">${money(row.net_pnl)}</td>
+      <td class="num">${pct(row.return_pct)}</td>
+      <td class="num">${pct(row.win_rate)}</td>
+      <td class="num">${num(row.brier_score, 4)}</td>
+      <td class="num">${num(row.log_loss, 4)}</td>
+      <td class="num">${num(row.avg_edge, 4)}</td>
+      <td class="num">${num(row.avg_spread, 4)}</td>
+      <td class="num">${horizon}</td>`;
+  }, "No realized trades yet.");
 
   const events = [...(data.events || [])].reverse().slice(0, 18);
   $("eventList").innerHTML = events.length ? events.map((event) => {
