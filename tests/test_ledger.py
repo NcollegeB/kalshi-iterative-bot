@@ -191,3 +191,26 @@ def test_exit_execution_records_realized_pnl_and_clears_risk(tmp_path: Path):
         ).fetchone()
     assert row == ("live_closed", 1.1, 0.03, 1.07)
     assert ledger.realized_pnl_today(TradeMode.LIVE) == 1.07
+
+
+def test_recent_realized_orders_returns_adaptive_inputs(tmp_path: Path):
+    ledger = PaperLedger(tmp_path / "ledger.sqlite3")
+    signal_id = ledger.record_signal(make_signal("PAPER"), TradeMode.PAPER, "approved", "ok")
+    order_id = ledger.record_order(signal_id, make_order("PAPER", 0.4), TradeMode.PAPER, "paper_open")
+    ledger.mark_paper_settled(
+        order_id=order_id,
+        outcome_result="yes",
+        settlement_value=1.0,
+        settled_at="2026-05-28T17:00:00Z",
+        gross_pnl_dollars=0.6,
+        fee_estimate_dollars=0.0,
+        net_pnl_dollars=0.6,
+    )
+
+    rows = ledger.recent_realized_orders(TradeMode.PAPER, limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "PAPER"
+    assert rows[0]["estimated_probability"] == 0.8
+    assert rows[0]["settlement_result"] == "yes"
+    assert rows[0]["net_pnl_dollars"] == 0.6

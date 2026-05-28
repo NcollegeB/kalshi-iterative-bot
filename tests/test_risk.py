@@ -60,3 +60,21 @@ def test_risk_rejects_when_daily_loss_limit_is_hit():
     decision = risk.evaluate(make_signal(edge=0.2), PortfolioState(20.0, 0.0, realized_pnl_today_dollars=-2.01))
     assert not decision.approved
     assert "daily loss" in decision.reason
+
+
+def test_risk_multiplier_scales_budget_caps():
+    risk = RiskManager(
+        RiskConfig(
+            max_position_dollars=4.0,
+            max_open_risk_dollars=10.0,
+            max_bankroll_fraction_per_trade=0.20,
+            min_edge_dollars=0.05,
+            kelly_fraction=0.0,
+        ),
+        risk_multiplier=1.25,
+    )
+    decision = risk.evaluate(make_signal(edge=0.3, price=0.25), PortfolioState(20.0, 0.0))
+
+    assert decision.approved
+    assert decision.count == 20.0
+    assert decision.max_loss_dollars == 5.0

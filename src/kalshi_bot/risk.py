@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import floor
 
+from .adaptive_risk import effective_risk_limits
 from .config import RiskConfig
 from .models import RiskDecision, Signal
 
@@ -15,23 +16,27 @@ class PortfolioState:
 
 
 class RiskManager:
-    def __init__(self, config: RiskConfig) -> None:
+    def __init__(self, config: RiskConfig, risk_multiplier: float = 1.0) -> None:
         self.config = config
+        self.risk_multiplier = max(0.0, risk_multiplier)
+        self.effective_limits = effective_risk_limits(config, self.risk_multiplier)
 
     def evaluate(self, signal: Signal, state: PortfolioState) -> RiskDecision:
         if signal.edge < self.config.min_edge_dollars:
             return RiskDecision(False, f"edge {signal.edge:.4f} below minimum {self.config.min_edge_dollars:.4f}")
 
-        if state.realized_pnl_today_dollars <= -self.config.daily_loss_limit_dollars:
+        daily_loss_limit = self.effective_limits["daily_loss_limit_dollars"]
+        if state.realized_pnl_today_dollars <= -daily_loss_limit:
             return RiskDecision(False, "daily loss circuit breaker is active")
 
-        remaining_open_risk = self.config.max_open_risk_dollars - state.open_risk_dollars
+        max_open_risk = self.effective_limits["max_open_risk_dollars"]
+        remaining_open_risk = max_open_risk - state.open_risk_dollars
         if remaining_open_risk <= 0:
             return RiskDecision(False, "max open risk reached")
 
         per_position_budget = min(
-            self.config.max_position_dollars,
-            state.bankroll_dollars * self.config.max_bankroll_fraction_per_trade,
+            self.effective_limits["max_position_dollars"],
+            state.bankroll_dollars * self.effective_limits["max_bankroll_fraction_per_trade"],
             remaining_open_risk,
             state.bankroll_dollars,
         )
@@ -51,11 +56,12 @@ class RiskManager:
         return RiskDecision(True, "approved", count=count, max_loss_dollars=max_loss)
 
     def _fractional_kelly_budget(self, signal: Signal, state: PortfolioState) -> float | None:
-        if self.config.kelly_fraction <= 0:
+        kelly_fraction = self.effective_limits["kelly_fraction"]
+        if kelly_fraction <= 0:
             return None
         price = signal.reference_price
         probability = signal.estimated_probability
         if not (0 < price < 1 and 0 < probability < 1):
             return 0.0
         full_kelly_stake_fraction = max(0.0, (probability - price) / (1.0 - price))
-        return state.bankroll_dollars * self.config.kelly_fraction * full_kelly_stake_fraction
+        return state.bankroll_dollars * kelly_fraction * full_kelly_stake_fraction

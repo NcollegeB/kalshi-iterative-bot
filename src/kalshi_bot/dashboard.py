@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .adaptive_risk import evaluate_adaptive_risk
 from .config import AppConfig, DATA_DIR, PROJECT_ROOT
 from .ledger import PaperLedger
 from .models import TradeMode
@@ -73,14 +74,26 @@ def serve_dashboard(config: AppConfig, *, host: str = "127.0.0.1", port: int = 8
 def build_snapshot(config: AppConfig) -> dict[str, Any]:
     ledger = PaperLedger(config.db_path)
     logs = parse_log_events(LOG_PATH, limit=300)
+    adaptive_report = evaluate_adaptive_risk(
+        config.risk,
+        ledger.recent_realized_orders(
+            TradeMode.LIVE,
+            limit=max(config.risk.adaptive_window_trades, config.risk.adaptive_min_settled_trades),
+        ),
+    )
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "process": bot_process_status(),
         "risk": {
             **asdict(config.risk),
+            "adaptive_multiplier": adaptive_report.multiplier,
+            "effective_max_position_dollars": adaptive_report.effective_max_position_dollars,
+            "effective_max_open_risk_dollars": adaptive_report.effective_max_open_risk_dollars,
+            "effective_daily_loss_limit_dollars": adaptive_report.effective_daily_loss_limit_dollars,
             "live_open_risk_dollars": round(ledger.open_risk(TradeMode.LIVE), 4),
             "all_open_risk_dollars": round(ledger.open_risk(), 4),
         },
+        "adaptive_risk": adaptive_report.to_dict(),
         "probability_file": probability_file_state(PROBABILITY_PATH),
         "loop": loop_summary(logs),
         "positions": live_positions(config.db_path),
@@ -413,6 +426,7 @@ DASHBOARD_HTML = """<!doctype html>
         <div class="panel metric"><span>Win Rate</span><strong id="winRate">-</strong></div>
         <div class="panel metric"><span>Brier Score</span><strong id="brierScore">-</strong></div>
         <div class="panel metric"><span>Log Loss</span><strong id="logLoss">-</strong></div>
+        <div class="panel metric"><span>Risk Multiplier</span><strong id="riskMultiplier">-</strong></div>
         <div class="panel metric"><span>Max Position</span><strong id="maxPosition">-</strong></div>
         <div class="panel metric"><span>Max Open Risk</span><strong id="maxOpenRisk">-</strong></div>
         <div class="panel metric"><span>Model Candidates</span><strong id="candidateCount">-</strong></div>
@@ -686,8 +700,9 @@ function renderSnapshot(data) {
   $("winRate").textContent = pct(livePerf.win_rate);
   $("brierScore").textContent = num(calibration.brier_score, 4);
   $("logLoss").textContent = num(calibration.log_loss, 4);
-  $("maxPosition").textContent = money(data.risk.max_position_dollars);
-  $("maxOpenRisk").textContent = money(data.risk.max_open_risk_dollars);
+  $("riskMultiplier").textContent = `${num(data.risk.adaptive_multiplier || 1, 2)}x`;
+  $("maxPosition").textContent = money(data.risk.effective_max_position_dollars ?? data.risk.max_position_dollars);
+  $("maxOpenRisk").textContent = money(data.risk.effective_max_open_risk_dollars ?? data.risk.max_open_risk_dollars);
   $("candidateCount").textContent = data.probability_file.row_count;
   $("lastSignals").textContent = data.loop?.scan?.signals ?? "-";
   $("probabilityModified").textContent = data.probability_file.modified_at ? `not orders · file ${shortTime(data.probability_file.modified_at)}` : "not orders · no file";
@@ -754,8 +769,10 @@ function renderSnapshot(data) {
 
   const perfRows = data.performance.by_status || [];
   const calRows = data.calibration?.by_asset || [];
+  const adaptive = data.adaptive_risk || {};
   $("performanceList").innerHTML = [
-    `<div class="kv"><strong>Risk</strong><br>Live ${money(data.risk.live_open_risk_dollars)} / ${money(data.risk.max_open_risk_dollars)} open risk</div>`,
+    `<div class="kv"><strong>Risk</strong><br>Live ${money(data.risk.live_open_risk_dollars)} / ${money(data.risk.effective_max_open_risk_dollars ?? data.risk.max_open_risk_dollars)} open risk</div>`,
+    `<div class="kv"><strong>Adaptive sizing</strong><br>${num(adaptive.multiplier || 1, 2)}x, ${escapeHtml(adaptive.direction || "neutral")}: ${escapeHtml(adaptive.reason || "")}<br>${adaptive.final_result_count || 0}/${adaptive.window_trades || 0} final results, PnL ${money(adaptive.net_pnl_dollars)}, CLV ${num(adaptive.avg_clv, 4)}, drawdown ${money(adaptive.max_drawdown_dollars)}</div>`,
     `<div class="kv"><strong>Live realized</strong><br>${livePerf.realized_count || 0} closed/settled, ${money(livePerf.net_pnl)} net, ${pct(livePerf.return_pct)} return, ${pct(livePerf.win_rate)} win rate</div>`,
     `<div class="kv"><strong>Calibration</strong><br>${calibration.count || 0} settled predictions, Brier ${num(calibration.brier_score, 4)}, log loss ${num(calibration.log_loss, 4)}, actual ${pct(calibration.actual_rate)}, avg prob ${pct(calibration.avg_probability)}</div>`,
     ...calRows.map((row) => `<div class="kv"><strong>${escapeHtml(row.asset)} calibration</strong><br>${row.count} settled, Brier ${num(row.brier_score, 4)}, log loss ${num(row.log_loss, 4)}, actual ${pct(row.actual_rate)}</div>`),

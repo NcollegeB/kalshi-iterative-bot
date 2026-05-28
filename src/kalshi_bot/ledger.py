@@ -148,6 +148,38 @@ class PaperLedger:
             ).fetchone()
         return float(row[0])
 
+    def recent_realized_orders(self, mode: TradeMode | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        mode_filter = ""
+        params: list[Any] = []
+        if mode is not None:
+            mode_filter = "AND o.mode=?"
+            params.append(mode.value)
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT o.id, o.created_at, COALESCE(o.settled_at, o.updated_at, o.created_at) AS realized_at,
+                       o.ticker, o.mode, o.status, o.outcome, o.count, o.price, o.fill_count,
+                       o.average_fill_price, o.exit_average_fill_price, o.exit_fill_count,
+                       o.settlement_result, o.max_loss_dollars, o.gross_pnl_dollars,
+                       o.net_pnl_dollars, s.estimated_probability, s.asset, s.edge,
+                       s.reference_price
+                FROM orders o
+                JOIN signals s ON s.id=o.signal_id
+                WHERE o.net_pnl_dollars IS NOT NULL
+                  {mode_filter}
+                  AND (
+                    o.status IN ('paper_settled', 'live_closed', 'live_settled')
+                    OR COALESCE(o.exit_fill_count, 0) > 0
+                  )
+                ORDER BY COALESCE(o.settled_at, o.updated_at, o.created_at) DESC, o.id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
+
     def has_live_exposure(self, ticker: str, outcome: str | None = None) -> bool:
         params: list[str] = [ticker]
         outcome_filter = ""

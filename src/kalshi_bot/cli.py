@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .adaptive_risk import evaluate_adaptive_risk
 from .btc_model import current_coinbase_btc_spot, generate_btc_probability_rows, write_probability_csv
 from .config import DATA_DIR, load_config
 from .crypto_model import DEFAULT_ASSETS, generate_crypto_probability_rows, write_crypto_probability_csv
@@ -162,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_cancel_live_resting(args, config, client, ledger)
 
     if args.command == "live-ready":
-        return run_live_ready(config, client)
+        return run_live_ready(config, client, ledger)
 
     if args.command == "balance":
         print(client.get_balance())
@@ -209,7 +210,8 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
             raise SystemExit("spread-maker is paper-only; use probability-file for demo/live execution")
 
     signals = strategy.generate(client, markets)
-    risk = RiskManager(config.risk)
+    adaptive_report = _adaptive_risk_for_mode(config, ledger, mode)
+    risk = RiskManager(config.risk, risk_multiplier=adaptive_report.multiplier)
     state = PortfolioState(
         bankroll_dollars=config.risk.bankroll_dollars,
         open_risk_dollars=ledger.open_risk(mode),
@@ -272,6 +274,7 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
         state = PortfolioState(
             bankroll_dollars=state.bankroll_dollars,
             open_risk_dollars=state.open_risk_dollars + decision.max_loss_dollars,
+            realized_pnl_today_dollars=state.realized_pnl_today_dollars,
         )
 
     print(
@@ -285,6 +288,7 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
             "signals_rejected": rejected,
             "order_errors": order_errors,
             "order_error_examples": order_error_examples,
+            "adaptive_risk": adaptive_report.to_dict(),
             "dry_run": getattr(args, "dry_run", False),
             "db_path": str(config.db_path),
         }
@@ -302,7 +306,7 @@ def run_loop(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
 
     live_actions_enabled = args.enable_live_buys or args.execute_exits
     if live_actions_enabled:
-        startup = _live_loop_startup_ready(config, client)
+        startup = _live_loop_startup_ready(config, client, ledger)
         print({"live_loop_startup": startup}, flush=True)
         if not startup["ready"]:
             return 1
@@ -365,7 +369,7 @@ def run_loop(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
     return 0
 
 
-def _live_loop_startup_ready(config, client: KalshiClient) -> dict[str, Any]:
+def _live_loop_startup_ready(config, client: KalshiClient, ledger: PaperLedger | None = None) -> dict[str, Any]:
     checks = {
         "environment_is_production": config.kalshi.environment == "production",
         "credentials_configured": config.kalshi.has_credentials,
@@ -392,7 +396,11 @@ def _live_loop_startup_ready(config, client: KalshiClient) -> dict[str, Any]:
             checks["balance_fetch_ok"] = False
     else:
         checks["balance_fetch_ok"] = False
-    checks["balance_covers_max_position"] = available_balance_dollars >= config.risk.max_position_dollars
+    adaptive_report = _adaptive_risk_for_mode(config, ledger, TradeMode.LIVE) if ledger is not None else None
+    effective_max_position = (
+        adaptive_report.effective_max_position_dollars if adaptive_report is not None else config.risk.max_position_dollars
+    )
+    checks["balance_covers_max_position"] = available_balance_dollars >= effective_max_position
 
     required_checks = {key: value for key, value in checks.items() if key != "trading_active"}
     return {
@@ -402,6 +410,7 @@ def _live_loop_startup_ready(config, client: KalshiClient) -> dict[str, Any]:
         "exchange_status": exchange_status,
         "balance": balance,
         "available_balance_dollars": available_balance_dollars,
+        "adaptive_risk": adaptive_report.to_dict() if adaptive_report is not None else None,
     }
 
 
@@ -802,7 +811,7 @@ def run_cancel_live_resting(args: argparse.Namespace, config, client: KalshiClie
     return 0 if errors == 0 else 1
 
 
-def run_live_ready(config, client: KalshiClient) -> int:
+def run_live_ready(config, client: KalshiClient, ledger: PaperLedger | None = None) -> int:
     checks = {
         "environment_is_production": config.kalshi.environment == "production",
         "credentials_configured": config.kalshi.has_credentials,
@@ -824,7 +833,11 @@ def run_live_ready(config, client: KalshiClient) -> int:
             balance = {"error": str(exc)}
     else:
         checks["balance_fetch_ok"] = False
-    checks["balance_covers_max_position"] = available_balance_dollars >= config.risk.max_position_dollars
+    adaptive_report = _adaptive_risk_for_mode(config, ledger, TradeMode.LIVE) if ledger is not None else None
+    effective_max_position = (
+        adaptive_report.effective_max_position_dollars if adaptive_report is not None else config.risk.max_position_dollars
+    )
+    checks["balance_covers_max_position"] = available_balance_dollars >= effective_max_position
 
     ready = all(checks.values())
     print(
@@ -840,6 +853,7 @@ def run_live_ready(config, client: KalshiClient) -> int:
                 "max_bankroll_fraction_per_trade": config.risk.max_bankroll_fraction_per_trade,
                 "kelly_fraction": config.risk.kelly_fraction,
             },
+            "adaptive_risk": adaptive_report.to_dict() if adaptive_report is not None else None,
             "balance": balance,
             "available_balance_dollars": available_balance_dollars,
             "live_command_shape": (
@@ -977,6 +991,12 @@ def _scan_args_for_loop(args: argparse.Namespace, *, trading_active: bool = True
         demo=False,
         dry_run=not (args.enable_live_buys and trading_active),
     )
+
+
+def _adaptive_risk_for_mode(config, ledger: PaperLedger, mode: TradeMode):
+    window = max(config.risk.adaptive_window_trades, config.risk.adaptive_min_settled_trades)
+    rows = ledger.recent_realized_orders(mode, limit=window)
+    return evaluate_adaptive_risk(config.risk, rows)
 
 
 def _take_profit_args_for_loop(args: argparse.Namespace, *, trading_active: bool = True) -> argparse.Namespace:

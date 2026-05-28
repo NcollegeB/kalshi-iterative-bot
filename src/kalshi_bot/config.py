@@ -44,6 +44,18 @@ class RiskConfig:
     kelly_fraction: float = 0.25
     min_contracts: float = 1.0
     max_contracts: float = 25.0
+    adaptive_risk_enabled: bool = True
+    adaptive_min_settled_trades: int = 20
+    adaptive_window_trades: int = 50
+    adaptive_step_up: float = 0.15
+    adaptive_step_down: float = 0.25
+    adaptive_min_multiplier: float = 0.50
+    adaptive_max_multiplier: float = 1.25
+    adaptive_max_brier_score: float = 0.25
+    adaptive_max_log_loss: float = 0.75
+    adaptive_max_drawdown_dollars: float = 4.0
+    adaptive_min_net_pnl_dollars: float = 0.0
+    adaptive_min_avg_clv: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +92,18 @@ def load_config(env_file: Path | None = None) -> AppConfig:
             min_edge_dollars=_float_env("BOT_MIN_EDGE_DOLLARS", 0.08),
             max_bankroll_fraction_per_trade=_float_env("BOT_MAX_BANKROLL_FRACTION_PER_TRADE", 0.10),
             kelly_fraction=_float_env("BOT_KELLY_FRACTION", 0.25),
+            adaptive_risk_enabled=_bool_env("BOT_ADAPTIVE_RISK_ENABLED", True),
+            adaptive_min_settled_trades=_int_env("BOT_ADAPTIVE_MIN_SETTLED_TRADES", 20),
+            adaptive_window_trades=_int_env("BOT_ADAPTIVE_WINDOW_TRADES", 50),
+            adaptive_step_up=_float_env("BOT_ADAPTIVE_STEP_UP", 0.15),
+            adaptive_step_down=_float_env("BOT_ADAPTIVE_STEP_DOWN", 0.25),
+            adaptive_min_multiplier=_float_env("BOT_ADAPTIVE_MIN_MULTIPLIER", 0.50),
+            adaptive_max_multiplier=_float_env("BOT_ADAPTIVE_MAX_MULTIPLIER", 1.25),
+            adaptive_max_brier_score=_float_env("BOT_ADAPTIVE_MAX_BRIER_SCORE", 0.25),
+            adaptive_max_log_loss=_float_env("BOT_ADAPTIVE_MAX_LOG_LOSS", 0.75),
+            adaptive_max_drawdown_dollars=_float_env("BOT_ADAPTIVE_MAX_DRAWDOWN_DOLLARS", 4.0),
+            adaptive_min_net_pnl_dollars=_float_env("BOT_ADAPTIVE_MIN_NET_PNL_DOLLARS", 0.0),
+            adaptive_min_avg_clv=_float_env("BOT_ADAPTIVE_MIN_AVG_CLV", 0.0),
         ),
         db_path=Path(os.getenv("BOT_DB_PATH", str(DEFAULT_DB_PATH))).expanduser(),
     )
@@ -90,6 +114,20 @@ def _float_env(name: str, default: float) -> float:
     if value in (None, ""):
         return default
     return float(value)
+
+
+def _int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    return int(value)
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _empty_to_none(value: str | None) -> str | None:

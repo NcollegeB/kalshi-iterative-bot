@@ -23,6 +23,7 @@ Implemented:
 - Reduce-only live take-profit exits.
 - Continuous loop command for unattended checking.
 - Read-only localhost dashboard with P&L, returns, and calibration metrics.
+- Adaptive risk multiplier that scales sizing up/down from settled trade evidence.
 - Unit tests for risk sizing and orderbook price complements.
 
 Not implemented yet:
@@ -215,6 +216,13 @@ The loop uses these safety rules:
 - Live submitted and live filled entries count toward open risk.
 - Settled live entries are removed from local open risk through `reconcile-live`.
 - `BOT_MAX_POSITION_DOLLARS` and `BOT_MAX_OPEN_RISK_DOLLARS` still apply.
+- Adaptive risk stays at `1.0x` until enough final results exist, moves up only when PnL, CLV proxy, Brier/log loss, and drawdown checks pass, and moves down when calibration or drawdown fails.
+
+## Adaptive Risk Scaling
+
+The live scanner computes a rolling adaptive multiplier from recent realized trades before sizing new entries. It uses the last `BOT_ADAPTIVE_WINDOW_TRADES` realized orders, requires at least `BOT_ADAPTIVE_MIN_SETTLED_TRADES` final settled results before scaling up, and applies the multiplier to max position, max open risk, daily loss limit, bankroll-fraction sizing, and fractional Kelly sizing.
+
+The CLV field is currently a proxy: final settled trades use terminal contract value minus entry price, while early take-profit exits use exit price minus entry price. That is useful for sizing discipline, but it is not a true pre-close market-price snapshot.
 
 For a simple server session, use `tmux`:
 
