@@ -100,6 +100,31 @@ def test_generate_asset_rows_rejects_shrink_only_tail_edge():
     assert rows == []
 
 
+def test_generate_asset_rows_applies_spread_and_horizon_filters():
+    now = datetime(2026, 5, 27, 21, tzinfo=timezone.utc)
+    common = {
+        "asset": CryptoAsset("ETH", "ETH-USD", "KXETHD", 0.70),
+        "state": CryptoMarketState(
+            spot=100,
+            annual_volatility=0.70,
+            volatility_source="coinbase_1h_realized",
+            momentum_6h=0.01,
+        ),
+        "now": now,
+        "limit": 100,
+        "pages": 1,
+        "probability_shrink": 1.0,
+        "min_edge": 0.05,
+        "max_rows": 4,
+    }
+
+    wide_spread_rows = _generate_asset_rows(FakeCryptoClient(), max_spread=0.02, **common)
+    long_horizon_rows = _generate_asset_rows(FakeCryptoClient(), max_horizon_minutes=60, **common)
+
+    assert wide_spread_rows == []
+    assert long_horizon_rows == []
+
+
 def test_tradable_price_filter_skips_extreme_quotes():
     assert not _tradable_price(0.0)
     assert not _tradable_price(0.01)

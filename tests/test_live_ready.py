@@ -3,6 +3,7 @@ from argparse import Namespace
 import pytest
 
 from kalshi_bot.cli import (
+    _allowed_refresh_assets,
     _balance_dollars,
     _resolve_mode,
     _scan_args_for_loop,
@@ -47,6 +48,16 @@ def test_loop_dry_runs_live_actions_when_trading_is_paused():
 
     assert _scan_args_for_loop(args, trading_active=False).dry_run is True
     assert _take_profit_args_for_loop(args, trading_active=False).execute is False
+
+
+def test_allowed_refresh_assets_respects_risk_whitelist():
+    assets = _allowed_refresh_assets(["BTC", "ETH", "XRP", "DOGE"], ("BTC", "ETH", "SOL"))
+    assert assets == ["BTC", "ETH"]
+
+
+def test_allowed_refresh_assets_rejects_empty_intersection():
+    with pytest.raises(SystemExit, match="BOT_ALLOWED_ASSETS"):
+        _allowed_refresh_assets(["XRP", "DOGE"], ("BTC", "ETH", "SOL"))
 
 
 def test_refresh_btc_clears_probability_file_on_market_data_error(tmp_path, monkeypatch):

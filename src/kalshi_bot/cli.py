@@ -450,6 +450,9 @@ def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> i
         probability_shrink=args.probability_shrink,
         min_edge=config.risk.min_edge_dollars,
         max_rows=args.max_rows,
+        max_spread=config.risk.max_spread_dollars,
+        min_horizon_minutes=config.risk.min_time_to_close_minutes,
+        max_horizon_minutes=config.risk.max_time_to_close_minutes,
     )
     if not args.dry_run:
         write_probability_csv(args.output, rows)
@@ -479,7 +482,7 @@ def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> i
 
 
 def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -> int:
-    assets = _parse_asset_list(args.assets)
+    assets = _allowed_refresh_assets(_parse_asset_list(args.assets), config.risk.allowed_assets)
     rows = generate_crypto_probability_rows(
         client,
         assets=assets,
@@ -489,6 +492,9 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
         probability_shrink=args.probability_shrink,
         min_edge=config.risk.min_edge_dollars,
         max_rows_per_asset=args.max_rows_per_asset,
+        max_spread=config.risk.max_spread_dollars,
+        min_horizon_minutes=config.risk.min_time_to_close_minutes,
+        max_horizon_minutes=config.risk.max_time_to_close_minutes,
     )
     if not args.dry_run:
         write_crypto_probability_csv(args.output, rows)
@@ -858,6 +864,10 @@ def run_live_ready(config, client: KalshiClient, ledger: PaperLedger | None = No
                 "max_open_risk_dollars": config.risk.max_open_risk_dollars,
                 "daily_loss_limit_dollars": config.risk.daily_loss_limit_dollars,
                 "min_edge_dollars": config.risk.min_edge_dollars,
+                "allowed_assets": config.risk.allowed_assets,
+                "max_spread_dollars": config.risk.max_spread_dollars,
+                "min_time_to_close_minutes": config.risk.min_time_to_close_minutes,
+                "max_time_to_close_minutes": config.risk.max_time_to_close_minutes,
                 "max_bankroll_fraction_per_trade": config.risk.max_bankroll_fraction_per_trade,
                 "kelly_fraction": config.risk.kelly_fraction,
             },
@@ -1050,6 +1060,16 @@ def _parse_asset_list(raw_assets: str) -> list[str]:
     if not assets:
         raise SystemExit("At least one crypto asset is required.")
     return assets
+
+
+def _allowed_refresh_assets(assets: list[str], allowed_assets: tuple[str, ...]) -> list[str]:
+    if not allowed_assets:
+        return assets
+    allowed = set(allowed_assets)
+    filtered = [asset for asset in assets if asset in allowed]
+    if not filtered:
+        raise SystemExit("No requested crypto assets are allowed by BOT_ALLOWED_ASSETS.")
+    return filtered
 
 
 def _calculate_live_settlement(order: dict, settlement: dict) -> dict:

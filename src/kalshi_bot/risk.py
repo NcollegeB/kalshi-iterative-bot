@@ -25,6 +25,45 @@ class RiskManager:
         if signal.edge < self.config.min_edge_dollars:
             return RiskDecision(False, f"edge {signal.edge:.4f} below minimum {self.config.min_edge_dollars:.4f}")
 
+        if self.config.allowed_assets:
+            asset = (signal.asset or "").upper()
+            if asset not in self.config.allowed_assets:
+                allowed = ",".join(self.config.allowed_assets)
+                return RiskDecision(False, f"asset {asset or 'unknown'} outside allowed assets {allowed}")
+
+        if self.config.max_spread_dollars is not None:
+            if signal.spread is None:
+                return RiskDecision(False, "spread unavailable")
+            if signal.spread > self.config.max_spread_dollars:
+                return RiskDecision(
+                    False,
+                    f"spread {signal.spread:.4f} above maximum {self.config.max_spread_dollars:.4f}",
+                )
+
+        if self.config.min_time_to_close_minutes is not None:
+            if signal.time_to_close_minutes is None:
+                return RiskDecision(False, "time-to-close unavailable")
+            if signal.time_to_close_minutes < self.config.min_time_to_close_minutes:
+                return RiskDecision(
+                    False,
+                    (
+                        f"time-to-close {signal.time_to_close_minutes:.2f}m below minimum "
+                        f"{self.config.min_time_to_close_minutes:.2f}m"
+                    ),
+                )
+
+        if self.config.max_time_to_close_minutes is not None:
+            if signal.time_to_close_minutes is None:
+                return RiskDecision(False, "time-to-close unavailable")
+            if signal.time_to_close_minutes > self.config.max_time_to_close_minutes:
+                return RiskDecision(
+                    False,
+                    (
+                        f"time-to-close {signal.time_to_close_minutes:.2f}m above maximum "
+                        f"{self.config.max_time_to_close_minutes:.2f}m"
+                    ),
+                )
+
         daily_loss_limit = self.effective_limits["daily_loss_limit_dollars"]
         if state.realized_pnl_today_dollars <= -daily_loss_limit:
             return RiskDecision(False, "daily loss circuit breaker is active")

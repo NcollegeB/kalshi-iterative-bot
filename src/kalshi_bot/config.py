@@ -40,6 +40,10 @@ class RiskConfig:
     max_open_risk_dollars: float = 5.0
     daily_loss_limit_dollars: float = 2.0
     min_edge_dollars: float = 0.08
+    allowed_assets: tuple[str, ...] = ()
+    max_spread_dollars: float | None = None
+    min_time_to_close_minutes: float | None = None
+    max_time_to_close_minutes: float | None = None
     max_bankroll_fraction_per_trade: float = 0.10
     kelly_fraction: float = 0.25
     min_contracts: float = 1.0
@@ -90,6 +94,10 @@ def load_config(env_file: Path | None = None) -> AppConfig:
             max_open_risk_dollars=_float_env("BOT_MAX_OPEN_RISK_DOLLARS", 5.0),
             daily_loss_limit_dollars=_float_env("BOT_DAILY_LOSS_LIMIT_DOLLARS", 2.0),
             min_edge_dollars=_float_env("BOT_MIN_EDGE_DOLLARS", 0.08),
+            allowed_assets=_csv_env("BOT_ALLOWED_ASSETS"),
+            max_spread_dollars=_optional_float_env("BOT_MAX_SPREAD_DOLLARS"),
+            min_time_to_close_minutes=_optional_float_env("BOT_MIN_TIME_TO_CLOSE_MINUTES"),
+            max_time_to_close_minutes=_optional_float_env("BOT_MAX_TIME_TO_CLOSE_MINUTES"),
             max_bankroll_fraction_per_trade=_float_env("BOT_MAX_BANKROLL_FRACTION_PER_TRADE", 0.10),
             kelly_fraction=_float_env("BOT_KELLY_FRACTION", 0.25),
             adaptive_risk_enabled=_bool_env("BOT_ADAPTIVE_RISK_ENABLED", True),
@@ -116,6 +124,13 @@ def _float_env(name: str, default: float) -> float:
     return float(value)
 
 
+def _optional_float_env(name: str) -> float | None:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
 def _int_env(name: str, default: int) -> int:
     value = os.getenv(name)
     if value in (None, ""):
@@ -128,6 +143,13 @@ def _bool_env(name: str, default: bool) -> bool:
     if value in (None, ""):
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(name: str) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return ()
+    return tuple(item.strip().upper() for item in value.split(",") if item.strip())
 
 
 def _empty_to_none(value: str | None) -> str | None:

@@ -216,7 +216,17 @@ The loop uses these safety rules:
 - Live submitted and live filled entries count toward open risk.
 - Settled live entries are removed from local open risk through `reconcile-live`.
 - `BOT_MAX_POSITION_DOLLARS` and `BOT_MAX_OPEN_RISK_DOLLARS` still apply.
+- `BOT_ALLOWED_ASSETS`, `BOT_MAX_SPREAD_DOLLARS`, `BOT_MIN_TIME_TO_CLOSE_MINUTES`, and `BOT_MAX_TIME_TO_CLOSE_MINUTES` reject candidates before order sizing. Crypto refresh also skips assets outside `BOT_ALLOWED_ASSETS`.
 - Adaptive risk stays at `1.0x` until enough final results exist, moves up only when PnL, CLV proxy, Brier/log loss, and drawdown checks pass, and moves down when calibration or drawdown fails.
+
+Current tightened crypto defaults favor cleaner fills:
+
+```env
+BOT_ALLOWED_ASSETS=BTC,ETH,SOL
+BOT_MAX_SPREAD_DOLLARS=0.02
+BOT_MIN_TIME_TO_CLOSE_MINUTES=10
+BOT_MAX_TIME_TO_CLOSE_MINUTES=60
+```
 
 ## Adaptive Risk Scaling
 

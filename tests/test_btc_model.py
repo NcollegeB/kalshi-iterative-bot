@@ -91,6 +91,32 @@ def test_generate_btc_rows_rejects_shrink_only_tail_edge():
     assert rows == []
 
 
+def test_generate_btc_rows_applies_spread_and_horizon_filters():
+    now = datetime(2026, 5, 27, 21, tzinfo=timezone.utc)
+
+    wide_spread_rows = generate_btc_probability_rows(
+        FakeBtcClient(),
+        spot=100,
+        now=now,
+        annual_volatility=0.55,
+        probability_shrink=1.0,
+        min_edge=0.05,
+        max_spread=0.02,
+    )
+    long_horizon_rows = generate_btc_probability_rows(
+        FakeBtcClient(),
+        spot=100,
+        now=now,
+        annual_volatility=0.55,
+        probability_shrink=1.0,
+        min_edge=0.05,
+        max_horizon_minutes=60,
+    )
+
+    assert wide_spread_rows == []
+    assert long_horizon_rows == []
+
+
 def test_write_probability_csv(tmp_path: Path):
     rows = generate_btc_probability_rows(
         FakeBtcClient(),

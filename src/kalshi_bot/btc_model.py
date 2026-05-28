@@ -80,6 +80,9 @@ def generate_btc_probability_rows(
     probability_shrink: float = 0.75,
     min_edge: float = 0.08,
     max_rows: int = 12,
+    max_spread: float | None = None,
+    min_horizon_minutes: float | None = None,
+    max_horizon_minutes: float | None = None,
 ) -> list[BtcProbabilityRow]:
     markets = _fetch_series_markets(client, series_ticker=series_ticker, limit=limit, pages=pages)
     rows: list[BtcProbabilityRow] = []
@@ -91,13 +94,22 @@ def generate_btc_probability_rows(
         horizon_seconds = (close_time - now).total_seconds()
         if horizon_seconds <= 0:
             continue
+        horizon_minutes = horizon_seconds / 60
+        if min_horizon_minutes is not None and horizon_minutes < min_horizon_minutes:
+            continue
+        if max_horizon_minutes is not None and horizon_minutes > max_horizon_minutes:
+            continue
 
         yes_ask = _complement_price(market.no_bid)
         no_ask = _complement_price(market.yes_bid)
+        yes_bid = market.yes_bid
+        no_bid = market.no_bid
         if yes_ask is None and no_ask is None:
             top = client.get_orderbook(market.ticker)
             yes_ask = top.yes_ask
             no_ask = top.no_ask
+            yes_bid = top.yes_bid
+            no_bid = top.no_bid
         if yes_ask is None and no_ask is None:
             continue
 
@@ -112,6 +124,15 @@ def generate_btc_probability_rows(
         no_edge = (1.0 - estimated_probability) - no_ask if no_ask is not None else float("-inf")
         best_side = "yes" if yes_edge >= no_edge else "no"
         best_edge = max(yes_edge, no_edge)
+        best_spread = _outcome_spread(
+            yes_bid=yes_bid,
+            no_bid=no_bid,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            side=best_side,
+        )
+        if max_spread is not None and (best_spread is None or best_spread > max_spread):
+            continue
         raw_yes_edge = raw_probability - yes_ask if yes_ask is not None else float("-inf")
         raw_no_edge = (1.0 - raw_probability) - no_ask if no_ask is not None else float("-inf")
         raw_side_edge = raw_yes_edge if best_side == "yes" else raw_no_edge
@@ -120,7 +141,6 @@ def generate_btc_probability_rows(
         if raw_side_edge < 0.0:
             continue
 
-        horizon_minutes = horizon_seconds / 60
         rows.append(
             BtcProbabilityRow(
                 ticker=market.ticker,
@@ -234,3 +254,20 @@ def _complement_price(value: float | None) -> float | None:
     if value is None:
         return None
     return round(1.0 - value, 4)
+
+
+def _outcome_spread(
+    *,
+    yes_bid: float | None,
+    no_bid: float | None,
+    yes_ask: float | None,
+    no_ask: float | None,
+    side: str,
+) -> float | None:
+    if side == "yes":
+        if yes_bid is None or yes_ask is None:
+            return None
+        return round(yes_ask - yes_bid, 4)
+    if no_bid is None or no_ask is None:
+        return None
+    return round(no_ask - no_bid, 4)

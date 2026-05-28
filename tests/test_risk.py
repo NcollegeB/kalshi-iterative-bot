@@ -3,7 +3,7 @@ from kalshi_bot.models import OutcomeSide, Signal
 from kalshi_bot.risk import PortfolioState, RiskManager
 
 
-def make_signal(edge=0.1, price=0.5):
+def make_signal(edge=0.1, price=0.5, asset="BTC", spread=0.01, time_to_close_minutes=20):
     return Signal.now(
         strategy="test",
         ticker="TEST",
@@ -13,6 +13,9 @@ def make_signal(edge=0.1, price=0.5):
         reference_price=price,
         edge=edge,
         reason="test",
+        asset=asset,
+        spread=spread,
+        time_to_close_minutes=time_to_close_minutes,
     )
 
 
@@ -78,3 +81,29 @@ def test_risk_multiplier_scales_budget_caps():
     assert decision.approved
     assert decision.count == 20.0
     assert decision.max_loss_dollars == 5.0
+
+
+def test_risk_rejects_disallowed_asset():
+    risk = RiskManager(RiskConfig(allowed_assets=("BTC", "ETH")))
+    decision = risk.evaluate(make_signal(asset="XRP"), PortfolioState(20.0, 0.0))
+    assert not decision.approved
+    assert "outside allowed assets" in decision.reason
+
+
+def test_risk_rejects_wide_spread():
+    risk = RiskManager(RiskConfig(max_spread_dollars=0.02))
+    decision = risk.evaluate(make_signal(spread=0.05), PortfolioState(20.0, 0.0))
+    assert not decision.approved
+    assert "spread" in decision.reason
+
+
+def test_risk_rejects_time_to_close_outside_window():
+    risk = RiskManager(RiskConfig(min_time_to_close_minutes=10.0, max_time_to_close_minutes=60.0))
+
+    too_soon = risk.evaluate(make_signal(time_to_close_minutes=5.0), PortfolioState(20.0, 0.0))
+    too_late = risk.evaluate(make_signal(time_to_close_minutes=90.0), PortfolioState(20.0, 0.0))
+
+    assert not too_soon.approved
+    assert "below minimum" in too_soon.reason
+    assert not too_late.approved
+    assert "above maximum" in too_late.reason
