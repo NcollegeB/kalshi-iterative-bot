@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalshi-iterative-bot"
+version = "0.1.0"
+description = "Risk-controlled Kalshi trading bot scaffold with paper trading and iterative strategy hooks."
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42.0.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+kalshi-bot = "kalshi_bot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+

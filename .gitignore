@@ -1,0 +1,13 @@
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+*.sqlite3
+*.db
+logs/
+data/*.sqlite3
+data/*.csv
+!data/*.example.csv
+kalshi_private_key*
