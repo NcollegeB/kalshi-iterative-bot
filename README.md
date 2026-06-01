@@ -218,6 +218,8 @@ The loop uses these safety rules:
 - `BOT_MAX_POSITION_DOLLARS` and `BOT_MAX_OPEN_RISK_DOLLARS` still apply.
 - `BOT_ALLOWED_ASSETS`, `BOT_MAX_SPREAD_DOLLARS`, `BOT_MIN_TIME_TO_CLOSE_MINUTES`, and `BOT_MAX_TIME_TO_CLOSE_MINUTES` reject candidates before order sizing. Crypto refresh also skips assets outside `BOT_ALLOWED_ASSETS`.
 - Adaptive risk stays at `1.0x` until enough final results exist, moves up only when PnL, CLV proxy, Brier/log loss, and drawdown checks pass, and moves down when calibration or drawdown fails.
+- Calibration learning uses final settled live results to adjust each asset's model YES probability before edge checks. It waits for `BOT_CALIBRATION_MIN_SAMPLES` per asset and applies only a partial, capped adjustment.
+- The performance guard blocks new live buys for assets with at least `BOT_PERFORMANCE_GUARD_MIN_TRADES` recent realized trades when recent PnL or CLV is not positive. Existing positions are still reconciled and checked for exits.
 
 Current tightened crypto defaults favor cleaner fills:
 
@@ -226,6 +228,8 @@ BOT_ALLOWED_ASSETS=BTC,ETH,SOL
 BOT_MAX_SPREAD_DOLLARS=0.02
 BOT_MIN_TIME_TO_CLOSE_MINUTES=10
 BOT_MAX_TIME_TO_CLOSE_MINUTES=60
+BOT_CALIBRATION_ENABLED=true
+BOT_PERFORMANCE_GUARD_ENABLED=true
 ```
 
 ## Adaptive Risk Scaling
@@ -233,6 +237,14 @@ BOT_MAX_TIME_TO_CLOSE_MINUTES=60
 The live scanner computes a rolling adaptive multiplier from recent realized trades before sizing new entries. It uses the last `BOT_ADAPTIVE_WINDOW_TRADES` realized orders, requires at least `BOT_ADAPTIVE_MIN_SETTLED_TRADES` final settled results before scaling up, and applies the multiplier to max position, max open risk, daily loss limit, bankroll-fraction sizing, and fractional Kelly sizing.
 
 The CLV field is currently a proxy: final settled trades use terminal contract value minus entry price, while early take-profit exits use exit price minus entry price. That is useful for sizing discipline, but it is not a true pre-close market-price snapshot.
+
+## Learning Guardrails
+
+The bot does not retrain a black-box model in live mode. It uses simple, auditable learning controls:
+
+- `BOT_CALIBRATION_*` computes per-asset probability bias from final settled results, then shifts future YES probabilities by a capped fraction of that bias.
+- `BOT_PERFORMANCE_GUARD_*` computes recent realized PnL and CLV by asset. Assets with enough recent trades and bad performance are blocked from new live buys until the rolling window improves.
+- These controls affect new entries only. Reconciliation and take-profit exits keep running for existing positions.
 
 For a simple server session, use `tmux`:
 

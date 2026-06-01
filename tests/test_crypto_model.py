@@ -8,6 +8,7 @@ from kalshi_bot.crypto_model import (
     _generate_asset_rows,
     _tradable_price,
 )
+from kalshi_bot.model_learning import CalibrationAdjustment
 from kalshi_bot.models import Market, TopOfBook
 
 
@@ -123,6 +124,43 @@ def test_generate_asset_rows_applies_spread_and_horizon_filters():
 
     assert wide_spread_rows == []
     assert long_horizon_rows == []
+
+
+def test_generate_asset_rows_applies_calibration_adjustment():
+    now = datetime(2026, 5, 27, 21, tzinfo=timezone.utc)
+    common = {
+        "asset": CryptoAsset("ETH", "ETH-USD", "KXETHD", 0.70),
+        "state": CryptoMarketState(
+            spot=100,
+            annual_volatility=0.70,
+            volatility_source="coinbase_1h_realized",
+            momentum_6h=0.01,
+        ),
+        "now": now,
+        "limit": 100,
+        "pages": 1,
+        "probability_shrink": 1.0,
+        "min_edge": 0.05,
+        "max_rows": 4,
+    }
+    base_rows = _generate_asset_rows(FakeCryptoClient(), **common)
+    calibrated_rows = _generate_asset_rows(
+        FakeCryptoClient(),
+        calibration_adjustment=CalibrationAdjustment(
+            asset="ETH",
+            samples=20,
+            avg_probability_yes=0.4,
+            actual_yes_rate=0.6,
+            bias=0.2,
+            adjustment=0.1,
+            brier_score=0.2,
+            log_loss=0.5,
+        ),
+        **common,
+    )
+
+    assert calibrated_rows[0].estimated_probability == round(base_rows[0].estimated_probability + 0.1, 4)
+    assert "cal_adj=0.1000" in calibrated_rows[0].notes
 
 
 def test_tradable_price_filter_skips_extreme_quotes():

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import stdev
+from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -18,6 +19,7 @@ from .btc_model import (
     probability_above_strike,
     shrink_probability,
 )
+from .model_learning import CalibrationAdjustment
 
 
 DEFAULT_ASSETS = ("BTC", "ETH", "SOL", "XRP", "DOGE")
@@ -80,6 +82,7 @@ def generate_crypto_probability_rows(
     max_spread: float | None = None,
     min_horizon_minutes: float | None = None,
     max_horizon_minutes: float | None = None,
+    calibration_adjustments: Mapping[str, CalibrationAdjustment] | None = None,
 ) -> list[CryptoProbabilityRow]:
     rows: list[CryptoProbabilityRow] = []
     for symbol in assets:
@@ -101,6 +104,7 @@ def generate_crypto_probability_rows(
             max_spread=max_spread,
             min_horizon_minutes=min_horizon_minutes,
             max_horizon_minutes=max_horizon_minutes,
+            calibration_adjustment=(calibration_adjustments or {}).get(asset.symbol),
         )
         rows.extend(asset_rows)
     return sorted(rows, key=lambda row: row.best_edge, reverse=True)
@@ -211,6 +215,7 @@ def _generate_asset_rows(
     max_spread: float | None = None,
     min_horizon_minutes: float | None = None,
     max_horizon_minutes: float | None = None,
+    calibration_adjustment: CalibrationAdjustment | None = None,
 ) -> list[CryptoProbabilityRow]:
     rows: list[CryptoProbabilityRow] = []
     markets = _fetch_series_markets(client, series_ticker=asset.threshold_series, limit=limit, pages=pages)
@@ -247,7 +252,8 @@ def _generate_asset_rows(
             horizon_seconds=horizon_seconds,
             annual_volatility=state.annual_volatility,
         )
-        estimated_probability = shrink_probability(raw_probability, probability_shrink)
+        base_probability = shrink_probability(raw_probability, probability_shrink)
+        estimated_probability = _apply_calibration(base_probability, calibration_adjustment)
         yes_edge = (
             estimated_probability - yes_ask if yes_ask is not None and _tradable_price(yes_ask) else float("-inf")
         )
@@ -288,8 +294,10 @@ def _generate_asset_rows(
                     f"spot={state.spot:.6g} strike={strike:.6g} close_time={market.close_time} "
                     f"horizon_min={horizon_minutes:.1f} annual_vol={state.annual_volatility:.4f} "
                     f"vol_source={state.volatility_source} shrink={probability_shrink:.2f} "
-                    f"momentum_6h={_fmt_optional(state.momentum_6h)} raw_p_yes={raw_probability:.4f} "
+                    f"momentum_6h={_fmt_optional(state.momentum_6h)} base_p_yes={base_probability:.4f} "
+                    f"raw_p_yes={raw_probability:.4f} "
                     f"raw_edge={raw_side_edge:.4f} "
+                    f"{_calibration_note(calibration_adjustment)}"
                     f"yes_ask={_fmt_optional(yes_ask)} no_ask={_fmt_optional(no_ask)}"
                 ),
                 best_edge=round(best_edge, 4),
@@ -353,6 +361,21 @@ def _outcome_spread(
 
 def _tradable_price(value: float) -> bool:
     return MIN_TRADE_PRICE <= value <= MAX_TRADE_PRICE
+
+
+def _apply_calibration(probability: float, adjustment: CalibrationAdjustment | None) -> float:
+    if adjustment is None:
+        return probability
+    return max(0.001, min(0.999, probability + adjustment.adjustment))
+
+
+def _calibration_note(adjustment: CalibrationAdjustment | None) -> str:
+    if adjustment is None:
+        return ""
+    return (
+        f"cal_adj={adjustment.adjustment:.4f} cal_n={adjustment.samples} "
+        f"cal_actual_yes={adjustment.actual_yes_rate:.4f} cal_avg_p_yes={adjustment.avg_probability_yes:.4f} "
+    )
 
 
 def _fmt_optional(value: float | None) -> str:

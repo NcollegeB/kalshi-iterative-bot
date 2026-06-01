@@ -15,6 +15,7 @@ from .crypto_model import DEFAULT_ASSETS, generate_crypto_probability_rows, writ
 from .dashboard import performance_breakdown, serve_dashboard
 from .kalshi_client import KalshiApiError, KalshiClient
 from .ledger import PaperLedger
+from .model_learning import evaluate_asset_performance_guard, load_asset_calibration
 from .models import BookSide, OutcomeSide, ProposedOrder, TradeMode
 from .risk import PortfolioState, RiskManager
 from .settlement import calculate_paper_settlement
@@ -219,7 +220,9 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
 
     signals = strategy.generate(client, markets)
     adaptive_report = _adaptive_risk_for_mode(config, ledger, mode)
-    risk = RiskManager(config.risk, risk_multiplier=adaptive_report.multiplier)
+    performance_guard = _asset_performance_guard_for_mode(config, ledger, mode)
+    blocked_assets = [asset for asset, report in performance_guard.items() if report.blocked]
+    risk = RiskManager(config.risk, risk_multiplier=adaptive_report.multiplier, blocked_assets=blocked_assets)
     state = PortfolioState(
         bankroll_dollars=config.risk.bankroll_dollars,
         open_risk_dollars=ledger.open_risk(mode),
@@ -297,6 +300,11 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
             "order_errors": order_errors,
             "order_error_examples": order_error_examples,
             "adaptive_risk": adaptive_report.to_dict(),
+            "performance_guard": {
+                "enabled": config.risk.performance_guard_enabled and mode == TradeMode.LIVE,
+                "blocked_assets": blocked_assets,
+                "assets": {asset: report.to_dict() for asset, report in performance_guard.items()},
+            },
             "dry_run": getattr(args, "dry_run", False),
             "db_path": str(config.db_path),
         }
@@ -483,6 +491,7 @@ def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> i
 
 def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -> int:
     assets = _allowed_refresh_assets(_parse_asset_list(args.assets), config.risk.allowed_assets)
+    calibration_adjustments = _asset_calibration_for_refresh(config)
     rows = generate_crypto_probability_rows(
         client,
         assets=assets,
@@ -495,6 +504,7 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
         max_spread=config.risk.max_spread_dollars,
         min_horizon_minutes=config.risk.min_time_to_close_minutes,
         max_horizon_minutes=config.risk.max_time_to_close_minutes,
+        calibration_adjustments=calibration_adjustments,
     )
     if not args.dry_run:
         write_crypto_probability_csv(args.output, rows)
@@ -503,6 +513,7 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
             "dry_run": args.dry_run,
             "output": str(args.output),
             "assets": assets,
+            "calibration": {asset: adjustment.to_dict() for asset, adjustment in calibration_adjustments.items()},
             "rows": len(rows),
             "top": [
                 {
@@ -522,6 +533,32 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
         }
     )
     return 0
+
+
+def _asset_calibration_for_refresh(config):
+    if not config.risk.calibration_enabled:
+        return {}
+    return load_asset_calibration(
+        config.db_path,
+        mode="live",
+        min_samples=config.risk.calibration_min_samples,
+        window_trades=config.risk.calibration_window_trades,
+        strength=config.risk.calibration_strength,
+        max_adjustment=config.risk.calibration_max_adjustment,
+    )
+
+
+def _asset_performance_guard_for_mode(config, ledger: PaperLedger, mode: TradeMode):
+    if mode != TradeMode.LIVE or not config.risk.performance_guard_enabled:
+        return {}
+    return evaluate_asset_performance_guard(
+        ledger.path,
+        mode=mode.value,
+        min_trades=config.risk.performance_guard_min_trades,
+        window_trades=config.risk.performance_guard_window_trades,
+        min_net_pnl_dollars=config.risk.performance_guard_min_net_pnl_dollars,
+        min_avg_clv=config.risk.performance_guard_min_avg_clv,
+    )
 
 
 def run_reconcile(args: argparse.Namespace, client: KalshiClient, ledger: PaperLedger) -> int:
@@ -870,6 +907,16 @@ def run_live_ready(config, client: KalshiClient, ledger: PaperLedger | None = No
                 "max_time_to_close_minutes": config.risk.max_time_to_close_minutes,
                 "max_bankroll_fraction_per_trade": config.risk.max_bankroll_fraction_per_trade,
                 "kelly_fraction": config.risk.kelly_fraction,
+                "calibration_enabled": config.risk.calibration_enabled,
+                "calibration_min_samples": config.risk.calibration_min_samples,
+                "calibration_window_trades": config.risk.calibration_window_trades,
+                "calibration_strength": config.risk.calibration_strength,
+                "calibration_max_adjustment": config.risk.calibration_max_adjustment,
+                "performance_guard_enabled": config.risk.performance_guard_enabled,
+                "performance_guard_min_trades": config.risk.performance_guard_min_trades,
+                "performance_guard_window_trades": config.risk.performance_guard_window_trades,
+                "performance_guard_min_net_pnl_dollars": config.risk.performance_guard_min_net_pnl_dollars,
+                "performance_guard_min_avg_clv": config.risk.performance_guard_min_avg_clv,
             },
             "adaptive_risk": adaptive_report.to_dict() if adaptive_report is not None else None,
             "balance": balance,

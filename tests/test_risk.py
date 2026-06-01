@@ -90,6 +90,13 @@ def test_risk_rejects_disallowed_asset():
     assert "outside allowed assets" in decision.reason
 
 
+def test_risk_rejects_blocked_asset():
+    risk = RiskManager(RiskConfig(allowed_assets=("BTC", "ETH")), blocked_assets=("BTC",))
+    decision = risk.evaluate(make_signal(asset="BTC"), PortfolioState(20.0, 0.0))
+    assert not decision.approved
+    assert "performance guard" in decision.reason
+
+
 def test_risk_rejects_wide_spread():
     risk = RiskManager(RiskConfig(max_spread_dollars=0.02))
     decision = risk.evaluate(make_signal(spread=0.05), PortfolioState(20.0, 0.0))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from math import floor
 
@@ -16,17 +17,26 @@ class PortfolioState:
 
 
 class RiskManager:
-    def __init__(self, config: RiskConfig, risk_multiplier: float = 1.0) -> None:
+    def __init__(
+        self,
+        config: RiskConfig,
+        risk_multiplier: float = 1.0,
+        blocked_assets: Iterable[str] | None = None,
+    ) -> None:
         self.config = config
         self.risk_multiplier = max(0.0, risk_multiplier)
         self.effective_limits = effective_risk_limits(config, self.risk_multiplier)
+        self.blocked_assets = {asset.upper() for asset in blocked_assets or ()}
 
     def evaluate(self, signal: Signal, state: PortfolioState) -> RiskDecision:
         if signal.edge < self.config.min_edge_dollars:
             return RiskDecision(False, f"edge {signal.edge:.4f} below minimum {self.config.min_edge_dollars:.4f}")
 
+        asset = (signal.asset or "").upper()
+        if asset and asset in self.blocked_assets:
+            return RiskDecision(False, f"asset {asset} blocked by recent performance guard")
+
         if self.config.allowed_assets:
-            asset = (signal.asset or "").upper()
             if asset not in self.config.allowed_assets:
                 allowed = ",".join(self.config.allowed_assets)
                 return RiskDecision(False, f"asset {asset or 'unknown'} outside allowed assets {allowed}")
