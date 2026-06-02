@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .performance_buckets import row_performance_bucket_keys
+
 
 @dataclass(frozen=True)
 class CalibrationAdjustment:
@@ -43,6 +45,29 @@ class AssetPerformance:
     def to_dict(self) -> dict[str, Any]:
         return {
             "asset": self.asset,
+            "trades": self.trades,
+            "net_pnl_dollars": self.net_pnl_dollars,
+            "avg_clv": self.avg_clv,
+            "blocked": self.blocked,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class BucketPerformance:
+    bucket_key: str
+    trades: int
+    net_pnl_dollars: float
+    avg_clv: float | None
+    blocked: bool
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        group, _, bucket = self.bucket_key.partition(":")
+        return {
+            "bucket_key": self.bucket_key,
+            "group": group,
+            "bucket": bucket,
             "trades": self.trades,
             "net_pnl_dollars": self.net_pnl_dollars,
             "avg_clv": self.avg_clv,
@@ -132,6 +157,48 @@ def evaluate_asset_performance_guard(
     return report
 
 
+def evaluate_bucket_performance_guard(
+    db_path: Path,
+    *,
+    mode: str = "live",
+    min_trades: int = 20,
+    window_trades: int = 100,
+    min_net_pnl_dollars: float = 0.0,
+    min_avg_clv: float = 0.0,
+) -> dict[str, BucketPerformance]:
+    rows = _recent_realized_rows(db_path, mode=mode, limit=window_trades)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        for bucket_key in row_performance_bucket_keys(row):
+            grouped.setdefault(bucket_key, []).append(row)
+
+    report: dict[str, BucketPerformance] = {}
+    for bucket_key, bucket_rows in grouped.items():
+        trades = len(bucket_rows)
+        net_pnl = round(sum(_float(row.get("net_pnl_dollars")) or 0.0 for row in bucket_rows), 4)
+        avg_clv = _avg_clv(bucket_rows)
+        blocked = False
+        reasons: list[str] = []
+        if trades >= max(1, min_trades):
+            if net_pnl <= min_net_pnl_dollars:
+                blocked = True
+                reasons.append(f"net_pnl {net_pnl:.4f} <= {min_net_pnl_dollars:.4f}")
+            if avg_clv is not None and avg_clv <= min_avg_clv:
+                blocked = True
+                reasons.append(f"avg_clv {avg_clv:.4f} <= {min_avg_clv:.4f}")
+        else:
+            reasons.append(f"only {trades} trades; need {min_trades}")
+        report[bucket_key] = BucketPerformance(
+            bucket_key=bucket_key,
+            trades=trades,
+            net_pnl_dollars=net_pnl,
+            avg_clv=avg_clv,
+            blocked=blocked,
+            reason="; ".join(reasons) if reasons else "passed",
+        )
+    return report
+
+
 def _recent_final_settlement_rows(db_path: Path, *, mode: str, limit: int) -> list[dict[str, Any]]:
     return _query_rows(
         db_path,
@@ -155,7 +222,8 @@ def _recent_realized_rows(db_path: Path, *, mode: str, limit: int) -> list[dict[
         """
         SELECT o.id, o.mode, o.outcome, o.price, o.count, o.fill_count,
                o.average_fill_price, o.exit_average_fill_price, o.exit_fill_count,
-               o.settlement_result, o.net_pnl_dollars, s.asset
+               o.settlement_result, o.net_pnl_dollars, s.asset, s.spread,
+               s.time_to_close_minutes
         FROM orders o
         JOIN signals s ON s.id=o.signal_id
         WHERE o.mode=?

@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 *.sqlite3
+*.sqlite3.bak-*
 *.db
 logs/
 data/*.sqlite3

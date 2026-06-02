@@ -1,13 +1,16 @@
 from kalshi_bot.cli import (
     _calculate_live_settlement,
+    _event_order_response_exit_price,
+    _event_order_response_fee_paid,
     _exit_order_from_entry,
     _exit_status_from_response,
     _exchange_fill_price,
+    _fill_stats_for_outcome,
     _local_status_from_exchange_order,
     _order_status_from_response,
     _target_exit_price,
 )
-from kalshi_bot.models import OutcomeSide, TopOfBook, TradeMode
+from kalshi_bot.models import BookSide, OutcomeSide, ProposedOrder, TopOfBook, TradeMode
 
 
 class FakeClient:
@@ -64,6 +67,40 @@ def test_exchange_fill_price_uses_outcome_side():
     order = {"yes_price_dollars": "0.0800", "no_price_dollars": "0.9200"}
     assert _exchange_fill_price("yes", order) == 0.08
     assert _exchange_fill_price("no", order) == 0.92
+
+
+def test_event_order_response_exit_price_converts_no_exit_average_price():
+    order = ProposedOrder(
+        ticker="T",
+        book_side=BookSide.BID,
+        outcome=OutcomeSide.NO,
+        count=25,
+        price=0.14,
+        client_order_id="tp-cid",
+        reduce_only=True,
+    )
+
+    assert _event_order_response_exit_price(order, {"average_fill_price": "0.3700"}) == 0.63
+    assert _event_order_response_exit_price(order, {"no_price_dollars": "0.1400"}) == 0.14
+
+
+def test_event_order_response_fee_paid_scales_average_fee_by_fill_count():
+    assert _event_order_response_fee_paid({"average_fee_paid": "0.0164"}, 25.0) == 0.41
+    assert _event_order_response_fee_paid({"maker_fees_dollars": "0.0100", "taker_fees_dollars": "0.0200"}, 25.0) == 0.03
+
+
+def test_fill_stats_for_outcome_uses_outcome_side_price_and_total_fees():
+    fills = [
+        {
+            "count_fp": "25.00",
+            "fee_cost": "0.410000",
+            "yes_price_dollars": "0.3700",
+            "no_price_dollars": "0.6300",
+        }
+    ]
+
+    assert _fill_stats_for_outcome("no", fills) == {"count": 25.0, "average_price": 0.63, "fee_paid": 0.41}
+    assert _fill_stats_for_outcome("yes", fills) == {"count": 25.0, "average_price": 0.37, "fee_paid": 0.41}
 
 
 def test_exit_order_waits_until_yes_bid_reaches_target():

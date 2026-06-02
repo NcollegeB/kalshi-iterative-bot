@@ -287,6 +287,48 @@ class PaperLedger:
             for row in rows
         ]
 
+    def list_live_exits_to_sync(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, ticker, outcome, count, price, fill_count, average_fill_price,
+                       average_fee_paid, status, exit_order_id, exit_price, exit_count,
+                       exit_fill_count, exit_remaining_count, exit_average_fill_price,
+                       exit_fee_paid, exit_status, exit_fill_source
+                FROM orders
+                WHERE mode='live'
+                  AND exit_order_id IS NOT NULL
+                  AND (
+                    COALESCE(exit_fill_source, '') != 'fills'
+                    OR COALESCE(exit_status, '') IN ('exit_submitted', 'exit_partial')
+                  )
+                ORDER BY id
+                """
+            ).fetchall()
+        return [
+            {
+                "id": int(row[0]),
+                "ticker": str(row[1]),
+                "outcome": str(row[2]),
+                "count": float(row[3]),
+                "price": float(row[4]),
+                "fill_count": _optional_float(row[5]) or float(row[3]),
+                "average_fill_price": _optional_float(row[6]) or float(row[4]),
+                "average_fee_paid": _optional_float(row[7]) or 0.0,
+                "status": str(row[8]),
+                "exit_order_id": str(row[9]),
+                "exit_price": _optional_float(row[10]) or 0.0,
+                "exit_count": _optional_float(row[11]) or 0.0,
+                "exit_fill_count": _optional_float(row[12]) or 0.0,
+                "exit_remaining_count": _optional_float(row[13]) or 0.0,
+                "exit_average_fill_price": _optional_float(row[14]),
+                "exit_fee_paid": _optional_float(row[15]) or 0.0,
+                "exit_status": row[16],
+                "exit_fill_source": row[17],
+            }
+            for row in rows
+        ]
+
     def list_unsettled_live_orders(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -406,6 +448,7 @@ class PaperLedger:
                     exit_fee_paid=COALESCE(exit_fee_paid, 0) + ?,
                     take_profit_threshold=?,
                     exit_status=?,
+                    exit_fill_source='submit_response',
                     gross_pnl_dollars=COALESCE(gross_pnl_dollars, 0) + ?,
                     fee_estimate_dollars=COALESCE(fee_estimate_dollars, 0) + ?,
                     net_pnl_dollars=COALESCE(net_pnl_dollars, 0) + ?,
@@ -431,6 +474,75 @@ class PaperLedger:
                     realized_fees,
                     realized_net,
                     status,
+                    entry_order_id,
+                ),
+            )
+
+    def sync_live_exit_from_fills(
+        self,
+        *,
+        entry_order_id: int,
+        exit_fill_count: float,
+        exit_remaining_count: float,
+        exit_average_fill_price: float | None,
+        exit_fee_paid: float,
+        exit_status: str,
+        source: str = "fills",
+    ) -> None:
+        with self._connect() as conn:
+            entry = conn.execute(
+                """
+                SELECT count, price, fill_count, average_fill_price, average_fee_paid
+                FROM orders
+                WHERE id=?
+                """,
+                (entry_order_id,),
+            ).fetchone()
+            gross_pnl = None
+            fees = None
+            net_pnl = None
+            if entry and exit_fill_count > 0 and exit_average_fill_price is not None:
+                entry_count = _optional_float(entry[2]) or float(entry[0])
+                if entry_count > 0:
+                    entry_price = _optional_float(entry[3]) or float(entry[1])
+                    entry_fee_paid = _optional_float(entry[4]) or 0.0
+                    entry_fee_alloc = min(entry_fee_paid, (exit_fill_count / entry_count) * entry_fee_paid)
+                    gross_pnl = round(exit_fill_count * (exit_average_fill_price - entry_price), 4)
+                    fees = round(entry_fee_alloc + exit_fee_paid, 4)
+                    net_pnl = round(gross_pnl - fees, 4)
+
+            conn.execute(
+                """
+                UPDATE orders
+                SET exit_fill_count=?,
+                    exit_remaining_count=?,
+                    exit_average_fill_price=COALESCE(?, exit_average_fill_price, exit_price),
+                    exit_fee_paid=?,
+                    exit_status=?,
+                    exit_fill_source=?,
+                    exit_synced_at=datetime('now'),
+                    gross_pnl_dollars=?,
+                    fee_estimate_dollars=?,
+                    net_pnl_dollars=?,
+                    updated_at=datetime('now'),
+                    status=CASE
+                        WHEN ?='exit_executed' THEN 'live_closed'
+                        WHEN status='live_closed' THEN 'live_executed'
+                        ELSE status
+                    END
+                WHERE id=?
+                """,
+                (
+                    exit_fill_count,
+                    exit_remaining_count,
+                    exit_average_fill_price,
+                    exit_fee_paid,
+                    exit_status,
+                    source,
+                    gross_pnl,
+                    fees,
+                    net_pnl,
+                    exit_status,
                     entry_order_id,
                 ),
             )
@@ -638,6 +750,8 @@ class PaperLedger:
                     "exit_fee_paid": "REAL",
                     "take_profit_threshold": "REAL",
                     "exit_status": "TEXT",
+                    "exit_fill_source": "TEXT",
+                    "exit_synced_at": "TEXT",
                     "updated_at": "TEXT",
                 },
             )

@@ -148,6 +148,9 @@ class RiskDecision:
     reason: str
     count: float = 0.0
     max_loss_dollars: float = 0.0
+    net_edge_after_fees: float | None = None
+    fee_haircut_dollars: float | None = None
+    raw_edge_dollars: float | None = None
 
 
 @dataclass(frozen=True)

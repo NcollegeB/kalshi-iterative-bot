@@ -40,8 +40,19 @@ def test_risk_caps_size_with_fractional_kelly():
     decision = risk.evaluate(make_signal(edge=0.1, price=0.25), PortfolioState(20.0, 0.0))
 
     assert decision.approved
-    assert decision.count == 2.66
-    assert decision.max_loss_dollars == 0.665
+    assert decision.count == 2.13
+    assert decision.max_loss_dollars == 0.5325
+    assert decision.net_edge_after_fees == 0.08
+
+
+def test_risk_rejects_edge_that_is_not_profitable_after_fees():
+    risk = RiskManager(RiskConfig(min_edge_dollars=0.08))
+    decision = risk.evaluate(make_signal(edge=0.09, price=0.5), PortfolioState(20.0, 0.0))
+
+    assert not decision.approved
+    assert "net_edge_after_fees" in decision.reason
+    assert decision.raw_edge_dollars == 0.09
+    assert decision.fee_haircut_dollars == 0.02
 
 
 def test_risk_rejects_low_edge():
@@ -95,6 +106,17 @@ def test_risk_rejects_blocked_asset():
     decision = risk.evaluate(make_signal(asset="BTC"), PortfolioState(20.0, 0.0))
     assert not decision.approved
     assert "performance guard" in decision.reason
+
+
+def test_risk_rejects_blocked_bucket():
+    risk = RiskManager(
+        RiskConfig(allowed_assets=("BTC", "ETH")),
+        blocked_buckets={"asset_side:BTC:yes": "net_pnl -1.0000 <= 0.0000"},
+    )
+    decision = risk.evaluate(make_signal(asset="BTC"), PortfolioState(20.0, 0.0))
+
+    assert not decision.approved
+    assert "bucket asset_side:BTC:yes" in decision.reason
 
 
 def test_risk_rejects_wide_spread():

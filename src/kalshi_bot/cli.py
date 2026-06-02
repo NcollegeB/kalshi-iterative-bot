@@ -15,7 +15,7 @@ from .crypto_model import DEFAULT_ASSETS, generate_crypto_probability_rows, writ
 from .dashboard import performance_breakdown, serve_dashboard
 from .kalshi_client import KalshiApiError, KalshiClient
 from .ledger import PaperLedger
-from .model_learning import evaluate_asset_performance_guard, load_asset_calibration
+from .model_learning import evaluate_asset_performance_guard, evaluate_bucket_performance_guard, load_asset_calibration
 from .models import BookSide, OutcomeSide, ProposedOrder, TradeMode
 from .risk import PortfolioState, RiskManager
 from .settlement import calculate_paper_settlement
@@ -101,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     reconcile_live_parser.add_argument("--limit", type=int, default=100)
     reconcile_live_parser.add_argument("--dry-run", action="store_true")
     subparsers.add_parser("sync-live-orders", help="Refresh local live order fill counts from Kalshi")
+    subparsers.add_parser("sync-live-exits", help="Refresh local take-profit exits from Kalshi fills")
     cancel_live_resting_parser = subparsers.add_parser(
         "cancel-live-resting",
         help="Cancel remaining resting live orders and sync local state",
@@ -168,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync-live-orders":
         return run_sync_live_orders(client, ledger)
 
+    if args.command == "sync-live-exits":
+        return run_sync_live_exits(client, ledger)
+
     if args.command == "cancel-live-resting":
         return run_cancel_live_resting(args, config, client, ledger)
 
@@ -220,9 +224,18 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
 
     signals = strategy.generate(client, markets)
     adaptive_report = _adaptive_risk_for_mode(config, ledger, mode)
-    performance_guard = _asset_performance_guard_for_mode(config, ledger, mode)
-    blocked_assets = [asset for asset, report in performance_guard.items() if report.blocked]
-    risk = RiskManager(config.risk, risk_multiplier=adaptive_report.multiplier, blocked_assets=blocked_assets)
+    asset_performance_guard = _asset_performance_guard_for_mode(config, ledger, mode)
+    bucket_performance_guard = _bucket_performance_guard_for_mode(config, ledger, mode)
+    blocked_assets = [asset for asset, report in asset_performance_guard.items() if report.blocked]
+    blocked_buckets = {
+        bucket_key: report.reason for bucket_key, report in bucket_performance_guard.items() if report.blocked
+    }
+    risk = RiskManager(
+        config.risk,
+        risk_multiplier=adaptive_report.multiplier,
+        blocked_assets=blocked_assets,
+        blocked_buckets=blocked_buckets,
+    )
     state = PortfolioState(
         bankroll_dollars=config.risk.bankroll_dollars,
         open_risk_dollars=ledger.open_risk(mode),
@@ -303,7 +316,9 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
             "performance_guard": {
                 "enabled": config.risk.performance_guard_enabled and mode == TradeMode.LIVE,
                 "blocked_assets": blocked_assets,
-                "assets": {asset: report.to_dict() for asset, report in performance_guard.items()},
+                "blocked_buckets": sorted(blocked_buckets),
+                "assets": {asset: report.to_dict() for asset, report in asset_performance_guard.items()},
+                "buckets": {bucket_key: report.to_dict() for bucket_key, report in bucket_performance_guard.items()},
             },
             "dry_run": getattr(args, "dry_run", False),
             "db_path": str(config.db_path),
@@ -363,6 +378,7 @@ def run_loop(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
 
             try:
                 run_sync_live_orders(client, ledger)
+                run_sync_live_exits(client, ledger)
                 if config.kalshi.has_credentials:
                     run_reconcile_live(_reconcile_live_args_for_loop(), client, ledger)
                 if args.refresh_btc:
@@ -370,6 +386,7 @@ def run_loop(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
                 if args.refresh_crypto:
                     run_refresh_crypto(_refresh_crypto_args_for_loop(args), config, client)
                 run_take_profit(_take_profit_args_for_loop(args, trading_active=trading_active), config, client, ledger)
+                run_sync_live_exits(client, ledger)
                 run_scan(_scan_args_for_loop(args, trading_active=trading_active), config, client, ledger)
             except KalshiApiError as exc:
                 print({"loop_iteration": iteration, "kalshi_api_error": str(exc)}, file=sys.stderr, flush=True)
@@ -561,6 +578,19 @@ def _asset_performance_guard_for_mode(config, ledger: PaperLedger, mode: TradeMo
     )
 
 
+def _bucket_performance_guard_for_mode(config, ledger: PaperLedger, mode: TradeMode):
+    if mode != TradeMode.LIVE or not config.risk.performance_guard_enabled:
+        return {}
+    return evaluate_bucket_performance_guard(
+        ledger.path,
+        mode=mode.value,
+        min_trades=config.risk.performance_guard_min_trades,
+        window_trades=config.risk.performance_guard_window_trades,
+        min_net_pnl_dollars=config.risk.performance_guard_min_net_pnl_dollars,
+        min_avg_clv=config.risk.performance_guard_min_avg_clv,
+    )
+
+
 def run_reconcile(args: argparse.Namespace, client: KalshiClient, ledger: PaperLedger) -> int:
     orders = ledger.list_unsettled_paper_orders(limit=args.limit)
     settled = 0
@@ -729,6 +759,71 @@ def run_sync_live_orders(client: KalshiClient, ledger: PaperLedger) -> int:
             )
 
     print({"live_orders_checked": len(orders), "live_orders_synced": synced, "errors": errors, "examples": examples})
+    return 0 if errors == 0 else 1
+
+
+def run_sync_live_exits(client: KalshiClient, ledger: PaperLedger) -> int:
+    exits = ledger.list_live_exits_to_sync()
+    synced = 0
+    errors = 0
+    examples = []
+    for entry in exits:
+        exit_order_id = entry.get("exit_order_id")
+        if not exit_order_id:
+            continue
+        try:
+            exchange_order = client.get_order(str(exit_order_id))
+            fills = _all_fills_for_order(client, str(exit_order_id))
+        except KalshiApiError as exc:
+            errors += 1
+            if len(examples) < 8:
+                examples.append({"local_order_id": entry["id"], "exit_order_id": exit_order_id, "error": str(exc)[:160]})
+            continue
+
+        fill_stats = _fill_stats_for_outcome(entry["outcome"], fills)
+        exchange_fill_count = _optional_float(exchange_order.get("fill_count_fp")) or 0.0
+        exchange_remaining_count = _optional_float(exchange_order.get("remaining_count_fp")) or 0.0
+        exit_fill_count = fill_stats["count"] if fill_stats["count"] > 0 else exchange_fill_count
+        exit_remaining_count = exchange_remaining_count
+        if exit_remaining_count <= 0 and entry.get("exit_count"):
+            exit_remaining_count = max(float(entry["exit_count"]) - exit_fill_count, 0.0)
+        exit_average_fill_price = fill_stats["average_price"]
+        if exit_average_fill_price is None and exchange_fill_count > 0:
+            exit_average_fill_price = entry.get("exit_average_fill_price") or entry.get("exit_price")
+        exit_fee_paid = fill_stats["fee_paid"]
+        if not fills:
+            exit_fee_paid = (_optional_float(exchange_order.get("maker_fees_dollars")) or 0.0) + (
+                _optional_float(exchange_order.get("taker_fees_dollars")) or 0.0
+            )
+        exit_status = _exit_status_from_response(
+            float(entry.get("exit_count") or exit_fill_count + exit_remaining_count),
+            {"fill_count": exit_fill_count, "remaining_count": exit_remaining_count},
+        )
+        ledger.sync_live_exit_from_fills(
+            entry_order_id=entry["id"],
+            exit_fill_count=round(exit_fill_count, 4),
+            exit_remaining_count=round(exit_remaining_count, 4),
+            exit_average_fill_price=exit_average_fill_price,
+            exit_fee_paid=round(exit_fee_paid, 4),
+            exit_status=exit_status,
+            source="fills" if fills else "exchange_order",
+        )
+        synced += 1
+        if len(examples) < 8:
+            examples.append(
+                {
+                    "local_order_id": entry["id"],
+                    "ticker": entry["ticker"],
+                    "outcome": entry["outcome"],
+                    "exit_status": exit_status,
+                    "exit_fill_count": round(exit_fill_count, 4),
+                    "exit_average_fill_price": exit_average_fill_price,
+                    "exit_fee_paid": round(exit_fee_paid, 4),
+                    "fills": len(fills),
+                }
+            )
+
+    print({"live_exits_checked": len(exits), "live_exits_synced": synced, "errors": errors, "examples": examples})
     return 0 if errors == 0 else 1
 
 
@@ -968,8 +1063,8 @@ def run_take_profit(args: argparse.Namespace, config, client: KalshiClient, ledg
             response = client.create_event_order_v2(order)
             exit_fill_count = _optional_float(response.get("fill_count")) or 0.0
             exit_remaining_count = _optional_float(response.get("remaining_count")) or 0.0
-            exit_average_fill_price = _optional_float(response.get("average_fill_price")) or order.price
-            exit_fee_paid = _optional_float(response.get("average_fee_paid")) or 0.0
+            exit_average_fill_price = _event_order_response_exit_price(order, response) or order.price
+            exit_fee_paid = _event_order_response_fee_paid(response, exit_fill_count)
             exit_status = _exit_status_from_response(order.count, response)
             ledger.mark_exit_submitted(
                 entry_order_id=entry["id"],
@@ -1224,6 +1319,60 @@ def _exchange_fill_price(outcome: str, exchange_order: dict) -> float | None:
     if OutcomeSide(outcome) == OutcomeSide.YES:
         return _optional_float(exchange_order.get("yes_price_dollars"))
     return _optional_float(exchange_order.get("no_price_dollars"))
+
+
+def _event_order_response_exit_price(order: ProposedOrder, response: dict) -> float | None:
+    if order.outcome == OutcomeSide.YES:
+        return _optional_float(response.get("yes_price_dollars")) or _optional_float(response.get("average_fill_price"))
+    outcome_price = _optional_float(response.get("no_price_dollars"))
+    if outcome_price is not None:
+        return outcome_price
+    average_fill_price = _optional_float(response.get("average_fill_price"))
+    if average_fill_price is None:
+        return None
+    return round(1.0 - average_fill_price, 4)
+
+
+def _event_order_response_fee_paid(response: dict, fill_count: float) -> float:
+    maker_fee = _optional_float(response.get("maker_fees_dollars"))
+    taker_fee = _optional_float(response.get("taker_fees_dollars"))
+    if maker_fee is not None or taker_fee is not None:
+        return round((maker_fee or 0.0) + (taker_fee or 0.0), 4)
+    average_fee_paid = _optional_float(response.get("average_fee_paid")) or 0.0
+    return round(average_fee_paid * max(fill_count, 0.0), 4)
+
+
+def _all_fills_for_order(client: KalshiClient, order_id: str) -> list[dict[str, Any]]:
+    fills: list[dict[str, Any]] = []
+    cursor = None
+    while True:
+        page, cursor = client.list_fills(order_id=order_id, limit=1000, cursor=cursor)
+        fills.extend(page)
+        if not cursor:
+            return fills
+
+
+def _fill_stats_for_outcome(outcome: str, fills: list[dict[str, Any]]) -> dict[str, float | None]:
+    side = OutcomeSide(outcome)
+    count = 0.0
+    weighted_price = 0.0
+    fee_paid = 0.0
+    for fill in fills:
+        fill_count = _optional_float(fill.get("count_fp")) or _optional_float(fill.get("count")) or 0.0
+        if fill_count <= 0:
+            continue
+        price = (
+            _optional_float(fill.get("yes_price_dollars"))
+            if side == OutcomeSide.YES
+            else _optional_float(fill.get("no_price_dollars"))
+        )
+        if price is None:
+            continue
+        count += fill_count
+        weighted_price += fill_count * price
+        fee_paid += _optional_float(fill.get("fee_cost")) or 0.0
+    average_price = round(weighted_price / count, 4) if count > 0 else None
+    return {"count": round(count, 4), "average_price": average_price, "fee_paid": round(fee_paid, 4)}
 
 
 def _order_from_signal(client: KalshiClient, signal, count: float) -> ProposedOrder:

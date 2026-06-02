@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from .adaptive_risk import evaluate_adaptive_risk
 from .config import AppConfig, DATA_DIR, PROJECT_ROOT
+from .kalshi_client import KalshiApiError, KalshiClient
 from .ledger import PaperLedger
 from .models import TradeMode
 
@@ -96,6 +97,7 @@ def build_snapshot(config: AppConfig) -> dict[str, Any]:
         "adaptive_risk": adaptive_report.to_dict(),
         "probability_file": probability_file_state(PROBABILITY_PATH),
         "loop": loop_summary(logs),
+        "account": account_summary(config),
         "positions": live_positions(config.db_path),
         "orders": recent_orders(config.db_path),
         "signals": recent_signals(config.db_path),
@@ -103,6 +105,30 @@ def build_snapshot(config: AppConfig) -> dict[str, Any]:
         "performance_breakdown": performance_breakdown(config.db_path),
         "calibration": calibration_summary(config.db_path),
         "events": logs[-80:],
+    }
+
+
+def account_summary(config: AppConfig) -> dict[str, Any]:
+    if not config.kalshi.has_credentials:
+        return {"available": False, "error": "missing credentials"}
+    try:
+        balance = KalshiClient(config.kalshi, timeout_seconds=5).get_balance()
+    except KalshiApiError as exc:
+        return {"available": False, "error": str(exc)[:180]}
+    cash = _float(balance.get("balance_dollars"))
+    if cash is None and balance.get("balance") is not None:
+        cash = (_float(balance.get("balance")) or 0.0) / 100.0
+    portfolio_value = _float(balance.get("portfolio_value"))
+    portfolio_value_dollars = round(portfolio_value / 100.0, 4) if portfolio_value is not None else None
+    total = None
+    if cash is not None or portfolio_value_dollars is not None:
+        total = round((cash or 0.0) + (portfolio_value_dollars or 0.0), 4)
+    return {
+        "available": True,
+        "cash_dollars": cash,
+        "portfolio_value_dollars": portfolio_value_dollars,
+        "total_equity_dollars": total,
+        "updated_ts": balance.get("updated_ts"),
     }
 
 
@@ -581,8 +607,11 @@ DASHBOARD_HTML = """<!doctype html>
 
     <main>
       <section class="metric-grid">
+        <div class="panel metric"><span>Kalshi Account Value</span><strong id="accountValue">-</strong></div>
+        <div class="panel metric"><span>Kalshi Cash</span><strong id="accountCash">-</strong></div>
+        <div class="panel metric"><span>Portfolio Value</span><strong id="portfolioValue">-</strong></div>
         <div class="panel metric"><span>Live Open Risk</span><strong id="liveRisk">-</strong></div>
-        <div class="panel metric"><span>Live Realized PnL</span><strong id="livePnl">-</strong></div>
+        <div class="panel metric"><span>Live Realized Ledger PnL</span><strong id="livePnl">-</strong></div>
         <div class="panel metric"><span>Live Return</span><strong id="liveReturn">-</strong></div>
         <div class="panel metric"><span>Win Rate</span><strong id="winRate">-</strong></div>
         <div class="panel metric"><span>Brier Score</span><strong id="brierScore">-</strong></div>
@@ -866,6 +895,10 @@ function renderSnapshot(data) {
   const proc = data.process?.processes?.find((p) => p.command.includes("kalshi-bot loop"));
   $("subtitle").textContent = proc ? `PID ${proc.pid}, running ${proc.elapsed}, 60 second loop` : "No loop process detected";
 
+  const account = data.account || {};
+  $("accountValue").textContent = account.available ? money(account.total_equity_dollars) : "-";
+  $("accountCash").textContent = account.available ? money(account.cash_dollars) : "-";
+  $("portfolioValue").textContent = account.available ? money(account.portfolio_value_dollars) : "-";
   $("liveRisk").textContent = money(data.risk.live_open_risk_dollars);
   const livePerf = data.performance?.live_realized || {};
   const calibration = data.calibration?.overall || {};
@@ -972,9 +1005,10 @@ function renderSnapshot(data) {
   const calRows = data.calibration?.by_asset || [];
   const adaptive = data.adaptive_risk || {};
   $("performanceList").innerHTML = [
+    `<div class="kv"><strong>Kalshi account</strong><br>${account.available ? `${money(account.total_equity_dollars)} total, ${money(account.cash_dollars)} cash, ${money(account.portfolio_value_dollars)} portfolio` : `Unavailable: ${escapeHtml(account.error || "")}`}</div>`,
     `<div class="kv"><strong>Risk</strong><br>Live ${money(data.risk.live_open_risk_dollars)} / ${money(data.risk.effective_max_open_risk_dollars ?? data.risk.max_open_risk_dollars)} open risk</div>`,
     `<div class="kv"><strong>Adaptive sizing</strong><br>${num(adaptive.multiplier || 1, 2)}x, ${escapeHtml(adaptive.direction || "neutral")}: ${escapeHtml(adaptive.reason || "")}<br>${adaptive.final_result_count || 0}/${adaptive.window_trades || 0} final results, PnL ${money(adaptive.net_pnl_dollars)}, CLV ${num(adaptive.avg_clv, 4)}, drawdown ${money(adaptive.max_drawdown_dollars)}</div>`,
-    `<div class="kv"><strong>Live realized</strong><br>${livePerf.realized_count || 0} closed/settled, ${money(livePerf.net_pnl)} net, ${pct(livePerf.return_pct)} return, ${pct(livePerf.win_rate)} win rate</div>`,
+    `<div class="kv"><strong>Live realized ledger</strong><br>${livePerf.realized_count || 0} closed/settled, ${money(livePerf.net_pnl)} net, ${pct(livePerf.return_pct)} return, ${pct(livePerf.win_rate)} win rate</div>`,
     `<div class="kv"><strong>Calibration</strong><br>${calibration.count || 0} settled predictions, Brier ${num(calibration.brier_score, 4)}, log loss ${num(calibration.log_loss, 4)}, actual ${pct(calibration.actual_rate)}, avg prob ${pct(calibration.avg_probability)}</div>`,
     ...calRows.map((row) => `<div class="kv"><strong>${escapeHtml(row.asset)} calibration</strong><br>${row.count} settled, Brier ${num(row.brier_score, 4)}, log loss ${num(row.log_loss, 4)}, actual ${pct(row.actual_rate)}</div>`),
     ...perfRows.map((row) => `<div class="kv"><strong>${escapeHtml(row.mode)} ${escapeHtml(row.status)}</strong><br>${row.count} orders, ${money(row.max_loss)} max loss, ${money(row.net_pnl)} net PnL</div>`)

@@ -193,6 +193,61 @@ def test_exit_execution_records_realized_pnl_and_clears_risk(tmp_path: Path):
     assert ledger.realized_pnl_today(TradeMode.LIVE) == 1.07
 
 
+def test_sync_live_exit_from_fills_recomputes_no_exit_pnl(tmp_path: Path):
+    ledger = PaperLedger(tmp_path / "ledger.sqlite3")
+    signal_id = ledger.record_signal(make_signal("LIVE"), TradeMode.LIVE, "approved", "ok")
+    order = ProposedOrder(
+        ticker="LIVE",
+        book_side=BookSide.ASK,
+        outcome=OutcomeSide.NO,
+        count=25.0,
+        price=0.07,
+        client_order_id="entry-cid",
+    )
+    order_id = ledger.record_order(signal_id, order, TradeMode.LIVE, "live_executed")
+    ledger.sync_live_order_from_exchange(
+        order_id=order_id,
+        status="live_executed",
+        fill_count=25.0,
+        remaining_count=0.0,
+        average_fill_price=0.07,
+        fee_paid=0.01,
+    )
+    ledger.mark_exit_submitted(
+        entry_order_id=order_id,
+        exit_order_id="exit-id",
+        exit_client_order_id="exit-cid",
+        exit_price=0.14,
+        exit_count=25.0,
+        exit_fill_count=25.0,
+        exit_remaining_count=0.0,
+        take_profit_threshold=0.14,
+        status="exit_executed",
+        exit_average_fill_price=0.37,
+        exit_fee_paid=0.0164,
+    )
+
+    ledger.sync_live_exit_from_fills(
+        entry_order_id=order_id,
+        exit_fill_count=25.0,
+        exit_remaining_count=0.0,
+        exit_average_fill_price=0.63,
+        exit_fee_paid=0.41,
+        exit_status="exit_executed",
+    )
+
+    with ledger._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT status, exit_average_fill_price, exit_fee_paid, gross_pnl_dollars,
+                   fee_estimate_dollars, net_pnl_dollars, exit_fill_source
+            FROM orders WHERE id=?
+            """,
+            (order_id,),
+        ).fetchone()
+    assert row == ("live_closed", 0.63, 0.41, 14.0, 0.42, 13.58, "fills")
+
+
 def test_recent_realized_orders_returns_adaptive_inputs(tmp_path: Path):
     ledger = PaperLedger(tmp_path / "ledger.sqlite3")
     signal_id = ledger.record_signal(make_signal("PAPER"), TradeMode.PAPER, "approved", "ok")

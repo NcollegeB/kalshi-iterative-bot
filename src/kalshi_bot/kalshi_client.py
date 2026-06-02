@@ -106,6 +106,24 @@ class KalshiClient:
         data = self._request("GET", f"/portfolio/settlements?{urlencode(query)}", authenticated=True)
         return list(data.get("settlements", [])), data.get("cursor")
 
+    def list_fills(
+        self,
+        *,
+        order_id: str | None = None,
+        ticker: str | None = None,
+        limit: int = 1000,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        query: dict[str, Any] = {"limit": limit}
+        if order_id:
+            query["order_id"] = order_id
+        if ticker:
+            query["ticker"] = ticker
+        if cursor:
+            query["cursor"] = cursor
+        data = self._request("GET", f"/portfolio/fills?{urlencode(query)}", authenticated=True)
+        return list(data.get("fills", [])), data.get("cursor")
+
     def create_event_order_v2(self, order: ProposedOrder) -> dict[str, Any]:
         payload = event_order_payload(order)
         return self._request("POST", "/portfolio/events/orders", body=payload, authenticated=True)

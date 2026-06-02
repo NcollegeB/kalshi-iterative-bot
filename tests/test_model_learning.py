@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from kalshi_bot.ledger import PaperLedger
-from kalshi_bot.model_learning import evaluate_asset_performance_guard, load_asset_calibration
+from kalshi_bot.model_learning import (
+    evaluate_asset_performance_guard,
+    evaluate_bucket_performance_guard,
+    load_asset_calibration,
+)
 from kalshi_bot.models import BookSide, OutcomeSide, ProposedOrder, Signal, TradeMode
 
 
@@ -17,6 +21,8 @@ def signal(ticker: str, *, asset: str = "BTC", probability_yes: float = 0.8) -> 
         reason="test",
         asset=asset,
         model_probability_yes=probability_yes,
+        spread=0.01,
+        time_to_close_minutes=20,
     )
 
 
@@ -83,3 +89,17 @@ def test_performance_guard_blocks_assets_with_negative_recent_pnl_and_clv(tmp_pa
     assert "net_pnl" in report["BTC"].reason
     assert report["ETH"].blocked is False
     assert "only 1 trades" in report["ETH"].reason
+
+
+def test_bucket_performance_guard_blocks_negative_recent_buckets(tmp_path: Path):
+    ledger = PaperLedger(tmp_path / "ledger.sqlite3")
+    settled_live_order(ledger, ticker="BTC1", probability_yes=0.8, settlement_result="no", net_pnl=-0.4)
+    settled_live_order(ledger, ticker="BTC2", probability_yes=0.6, settlement_result="no", net_pnl=-0.4)
+    settled_live_order(ledger, ticker="ETH1", asset="ETH", probability_yes=0.6, settlement_result="yes", net_pnl=0.6)
+
+    report = evaluate_bucket_performance_guard(ledger.path, min_trades=2)
+
+    assert report["asset_side:BTC:yes"].blocked
+    assert "net_pnl" in report["asset_side:BTC:yes"].reason
+    assert report["asset_side_horizon:BTC:yes:10-30m"].blocked
+    assert report["asset_side:ETH:yes"].blocked is False
