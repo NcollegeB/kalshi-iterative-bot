@@ -115,6 +115,8 @@ def test_generate_asset_rows_applies_spread_and_horizon_filters():
         "limit": 100,
         "pages": 1,
         "probability_shrink": 1.0,
+        "market_blend": 0.0,
+        "max_model_market_gap": None,
         "min_edge": 0.05,
         "max_rows": 4,
     }
@@ -140,6 +142,8 @@ def test_generate_asset_rows_applies_calibration_adjustment():
         "limit": 100,
         "pages": 1,
         "probability_shrink": 1.0,
+        "market_blend": 0.0,
+        "max_model_market_gap": None,
         "min_edge": 0.05,
         "max_rows": 4,
     }
@@ -161,6 +165,84 @@ def test_generate_asset_rows_applies_calibration_adjustment():
 
     assert calibrated_rows[0].estimated_probability == round(base_rows[0].estimated_probability + 0.1, 4)
     assert "cal_adj=0.1000" in calibrated_rows[0].notes
+
+
+def test_generate_asset_rows_blends_probability_toward_market_midpoint():
+    common = {
+        "asset": CryptoAsset("ETH", "ETH-USD", "KXETHD", 0.70),
+        "state": CryptoMarketState(
+            spot=100,
+            annual_volatility=0.70,
+            volatility_source="coinbase_1h_realized",
+            momentum_6h=0.01,
+        ),
+        "now": datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+        "limit": 100,
+        "pages": 1,
+        "probability_shrink": 1.0,
+        "max_model_market_gap": None,
+        "min_edge": 0.01,
+        "max_rows": 4,
+    }
+    base_rows = _generate_asset_rows(
+        FakeCryptoClient(yes_bid=0.30, no_bid=0.60),
+        market_blend=0.0,
+        **common,
+    )
+    blended_rows = _generate_asset_rows(
+        FakeCryptoClient(yes_bid=0.30, no_bid=0.60),
+        market_blend=0.5,
+        **common,
+    )
+
+    assert blended_rows[0].estimated_probability < base_rows[0].estimated_probability
+    assert "market_blend=0.50" in blended_rows[0].notes
+    assert "market_p_yes=0.3500" in blended_rows[0].notes
+
+
+def test_generate_asset_rows_rejects_large_model_market_gap():
+    rows = _generate_asset_rows(
+        FakeCryptoClient(ticker_suffix="T100", yes_bid=0.01, no_bid=0.98),
+        asset=CryptoAsset("ETH", "ETH-USD", "KXETHD", 0.70),
+        state=CryptoMarketState(
+            spot=100,
+            annual_volatility=0.70,
+            volatility_source="coinbase_1h_realized",
+            momentum_6h=0.01,
+        ),
+        now=datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+        limit=100,
+        pages=1,
+        probability_shrink=1.0,
+        market_blend=0.0,
+        max_model_market_gap=0.10,
+        min_edge=0.05,
+        max_rows=4,
+    )
+
+    assert rows == []
+
+
+def test_generate_asset_rows_rejects_out_of_regime_volatility():
+    rows = _generate_asset_rows(
+        FakeCryptoClient(),
+        asset=CryptoAsset("ETH", "ETH-USD", "KXETHD", 0.70),
+        state=CryptoMarketState(
+            spot=100,
+            annual_volatility=2.25,
+            volatility_source="coinbase_1h_realized",
+            momentum_6h=0.01,
+        ),
+        now=datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+        limit=100,
+        pages=1,
+        probability_shrink=1.0,
+        min_edge=0.05,
+        max_rows=4,
+        max_annual_volatility=1.75,
+    )
+
+    assert rows == []
 
 
 def test_tradable_price_filter_skips_extreme_quotes():

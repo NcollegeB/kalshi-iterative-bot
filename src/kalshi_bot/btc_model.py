@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from urllib.request import urlopen
 
+from .forecasting import blend_probability_with_market, market_yes_probability, model_market_gap
 from .models import Market, TopOfBook
 
 
@@ -83,6 +84,8 @@ def generate_btc_probability_rows(
     max_spread: float | None = None,
     min_horizon_minutes: float | None = None,
     max_horizon_minutes: float | None = None,
+    market_blend: float = 0.15,
+    max_model_market_gap: float | None = 0.35,
 ) -> list[BtcProbabilityRow]:
     markets = _fetch_series_markets(client, series_ticker=series_ticker, limit=limit, pages=pages)
     rows: list[BtcProbabilityRow] = []
@@ -119,7 +122,21 @@ def generate_btc_probability_rows(
             horizon_seconds=horizon_seconds,
             annual_volatility=annual_volatility,
         )
-        estimated_probability = shrink_probability(raw_probability, probability_shrink)
+        base_probability = shrink_probability(raw_probability, probability_shrink)
+        market_probability = market_yes_probability(
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            no_bid=no_bid,
+            no_ask=no_ask,
+        )
+        gap = model_market_gap(base_probability, market_probability)
+        if max_model_market_gap is not None and gap is not None and gap > max_model_market_gap:
+            continue
+        estimated_probability = blend_probability_with_market(
+            base_probability,
+            market_probability,
+            market_weight=market_blend,
+        )
         yes_edge = estimated_probability - yes_ask if yes_ask is not None else float("-inf")
         no_edge = (1.0 - estimated_probability) - no_ask if no_ask is not None else float("-inf")
         best_side = "yes" if yes_edge >= no_edge else "no"
@@ -150,6 +167,8 @@ def generate_btc_probability_rows(
                     f"spot={spot:.2f} strike={strike:.2f} "
                     f"close_time={market.close_time} horizon_min={horizon_minutes:.1f} "
                     f"annual_vol={annual_volatility:.2f} shrink={probability_shrink:.2f} "
+                    f"market_blend={market_blend:.2f} market_p_yes={_fmt_optional(market_probability)} "
+                    f"model_market_gap={_fmt_optional(gap)} base_p_yes={base_probability:.4f} "
                     f"raw_p_yes={raw_probability:.4f} raw_edge={raw_side_edge:.4f} "
                     f"yes_ask={_fmt_optional(yes_ask)} no_ask={_fmt_optional(no_ask)}"
                 ),

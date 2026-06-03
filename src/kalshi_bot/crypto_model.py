@@ -19,6 +19,7 @@ from .btc_model import (
     probability_above_strike,
     shrink_probability,
 )
+from .forecasting import blend_probability_with_market, market_yes_probability, model_market_gap
 from .model_learning import CalibrationAdjustment
 
 
@@ -83,6 +84,10 @@ def generate_crypto_probability_rows(
     min_horizon_minutes: float | None = None,
     max_horizon_minutes: float | None = None,
     calibration_adjustments: Mapping[str, CalibrationAdjustment] | None = None,
+    market_blend: float = 0.15,
+    max_model_market_gap: float | None = 0.35,
+    min_annual_volatility: float | None = 0.0,
+    max_annual_volatility: float | None = 1.75,
 ) -> list[CryptoProbabilityRow]:
     rows: list[CryptoProbabilityRow] = []
     for symbol in assets:
@@ -105,6 +110,10 @@ def generate_crypto_probability_rows(
             min_horizon_minutes=min_horizon_minutes,
             max_horizon_minutes=max_horizon_minutes,
             calibration_adjustment=(calibration_adjustments or {}).get(asset.symbol),
+            market_blend=market_blend,
+            max_model_market_gap=max_model_market_gap,
+            min_annual_volatility=min_annual_volatility,
+            max_annual_volatility=max_annual_volatility,
         )
         rows.extend(asset_rows)
     return sorted(rows, key=lambda row: row.best_edge, reverse=True)
@@ -216,7 +225,18 @@ def _generate_asset_rows(
     min_horizon_minutes: float | None = None,
     max_horizon_minutes: float | None = None,
     calibration_adjustment: CalibrationAdjustment | None = None,
+    market_blend: float = 0.15,
+    max_model_market_gap: float | None = 0.35,
+    min_annual_volatility: float | None = 0.0,
+    max_annual_volatility: float | None = 1.75,
 ) -> list[CryptoProbabilityRow]:
+    if not _volatility_in_regime(
+        state.annual_volatility,
+        min_annual_volatility=min_annual_volatility,
+        max_annual_volatility=max_annual_volatility,
+    ):
+        return []
+
     rows: list[CryptoProbabilityRow] = []
     markets = _fetch_series_markets(client, series_ticker=asset.threshold_series, limit=limit, pages=pages)
     for market in markets:
@@ -253,7 +273,21 @@ def _generate_asset_rows(
             annual_volatility=state.annual_volatility,
         )
         base_probability = shrink_probability(raw_probability, probability_shrink)
-        estimated_probability = _apply_calibration(base_probability, calibration_adjustment)
+        calibrated_probability = _apply_calibration(base_probability, calibration_adjustment)
+        market_probability = market_yes_probability(
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            no_bid=no_bid,
+            no_ask=no_ask,
+        )
+        gap = model_market_gap(calibrated_probability, market_probability)
+        if max_model_market_gap is not None and gap is not None and gap > max_model_market_gap:
+            continue
+        estimated_probability = blend_probability_with_market(
+            calibrated_probability,
+            market_probability,
+            market_weight=market_blend,
+        )
         yes_edge = (
             estimated_probability - yes_ask if yes_ask is not None and _tradable_price(yes_ask) else float("-inf")
         )
@@ -294,7 +328,11 @@ def _generate_asset_rows(
                     f"spot={state.spot:.6g} strike={strike:.6g} close_time={market.close_time} "
                     f"horizon_min={horizon_minutes:.1f} annual_vol={state.annual_volatility:.4f} "
                     f"vol_source={state.volatility_source} shrink={probability_shrink:.2f} "
+                    f"market_blend={market_blend:.2f} market_p_yes={_fmt_optional(market_probability)} "
+                    f"model_market_gap={_fmt_optional(gap)} "
+                    f"vol_regime={_fmt_optional(min_annual_volatility)}-{_fmt_optional(max_annual_volatility)} "
                     f"momentum_6h={_fmt_optional(state.momentum_6h)} base_p_yes={base_probability:.4f} "
+                    f"calibrated_p_yes={calibrated_probability:.4f} "
                     f"raw_p_yes={raw_probability:.4f} "
                     f"raw_edge={raw_side_edge:.4f} "
                     f"{_calibration_note(calibration_adjustment)}"
@@ -367,6 +405,19 @@ def _apply_calibration(probability: float, adjustment: CalibrationAdjustment | N
     if adjustment is None:
         return probability
     return max(0.001, min(0.999, probability + adjustment.adjustment))
+
+
+def _volatility_in_regime(
+    annual_volatility: float,
+    *,
+    min_annual_volatility: float | None,
+    max_annual_volatility: float | None,
+) -> bool:
+    if min_annual_volatility is not None and annual_volatility < min_annual_volatility:
+        return False
+    if max_annual_volatility is not None and annual_volatility > max_annual_volatility:
+        return False
+    return True
 
 
 def _calibration_note(adjustment: CalibrationAdjustment | None) -> str:

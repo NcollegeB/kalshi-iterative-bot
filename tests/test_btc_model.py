@@ -78,6 +78,46 @@ def test_generate_btc_rows_includes_horizon_and_edge_notes():
     assert "raw_edge=" in rows[0].notes
 
 
+def test_generate_btc_rows_blends_probability_toward_market_midpoint():
+    common = {
+        "spot": 100,
+        "now": datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+        "annual_volatility": 0.55,
+        "probability_shrink": 1.0,
+        "max_model_market_gap": None,
+        "min_edge": 0.01,
+    }
+    base_rows = generate_btc_probability_rows(
+        FakeBtcClient(yes_bid=0.30, no_bid=0.60),
+        market_blend=0.0,
+        **common,
+    )
+    blended_rows = generate_btc_probability_rows(
+        FakeBtcClient(yes_bid=0.30, no_bid=0.60),
+        market_blend=0.5,
+        **common,
+    )
+
+    assert blended_rows[0].estimated_probability < base_rows[0].estimated_probability
+    assert "market_blend=0.50" in blended_rows[0].notes
+    assert "market_p_yes=0.3500" in blended_rows[0].notes
+
+
+def test_generate_btc_rows_rejects_large_model_market_gap():
+    rows = generate_btc_probability_rows(
+        FakeBtcClient(ticker_suffix="T100", yes_bid=0.01, no_bid=0.98),
+        spot=100,
+        now=datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+        annual_volatility=0.55,
+        probability_shrink=1.0,
+        market_blend=0.0,
+        max_model_market_gap=0.10,
+        min_edge=0.05,
+    )
+
+    assert rows == []
+
+
 def test_generate_btc_rows_rejects_shrink_only_tail_edge():
     rows = generate_btc_probability_rows(
         FakeBtcClient(ticker_suffix="T200", yes_bid=0.0, no_bid=0.98),

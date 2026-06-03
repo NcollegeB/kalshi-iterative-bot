@@ -62,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     loop_parser.add_argument("--crypto-assets", default=",".join(DEFAULT_ASSETS))
     loop_parser.add_argument("--crypto-max-rows-per-asset", type=int, default=4)
     loop_parser.add_argument("--crypto-probability-shrink", type=float, default=0.70)
+    loop_parser.add_argument("--crypto-market-blend", type=float, default=0.15)
+    loop_parser.add_argument("--crypto-max-model-market-gap", type=float, default=0.35)
+    loop_parser.add_argument("--crypto-min-annual-vol", type=float, default=0.0)
+    loop_parser.add_argument("--crypto-max-annual-vol", type=float, default=1.75)
 
     refresh_btc_parser = subparsers.add_parser("refresh-btc", help="Write current BTC model rows to probabilities.csv")
     refresh_btc_parser.add_argument("--output", type=Path, default=DATA_DIR / "probabilities.csv")
@@ -70,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     refresh_btc_parser.add_argument("--pages", type=int, default=1)
     refresh_btc_parser.add_argument("--annual-vol", type=float, default=0.55)
     refresh_btc_parser.add_argument("--probability-shrink", type=float, default=0.75)
+    refresh_btc_parser.add_argument("--market-blend", type=float, default=0.15)
+    refresh_btc_parser.add_argument("--max-model-market-gap", type=float, default=0.35)
     refresh_btc_parser.add_argument("--max-rows", type=int, default=12)
     refresh_btc_parser.add_argument("--spot", type=float, default=None)
     refresh_btc_parser.add_argument("--dry-run", action="store_true")
@@ -83,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     refresh_crypto_parser.add_argument("--limit", type=int, default=100)
     refresh_crypto_parser.add_argument("--pages", type=int, default=1)
     refresh_crypto_parser.add_argument("--probability-shrink", type=float, default=0.70)
+    refresh_crypto_parser.add_argument("--market-blend", type=float, default=0.15)
+    refresh_crypto_parser.add_argument("--max-model-market-gap", type=float, default=0.35)
+    refresh_crypto_parser.add_argument("--min-annual-vol", type=float, default=0.0)
+    refresh_crypto_parser.add_argument("--max-annual-vol", type=float, default=1.75)
     refresh_crypto_parser.add_argument("--max-rows-per-asset", type=int, default=4)
     refresh_crypto_parser.add_argument("--dry-run", action="store_true")
 
@@ -473,6 +483,8 @@ def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> i
         pages=args.pages,
         annual_volatility=args.annual_vol,
         probability_shrink=args.probability_shrink,
+        market_blend=getattr(args, "market_blend", 0.15),
+        max_model_market_gap=getattr(args, "max_model_market_gap", 0.35),
         min_edge=config.risk.min_edge_dollars,
         max_rows=args.max_rows,
         max_spread=config.risk.max_spread_dollars,
@@ -487,6 +499,8 @@ def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> i
             "output": str(args.output),
             "series": args.series,
             "spot": round(float(spot), 2),
+            "market_blend": getattr(args, "market_blend", 0.15),
+            "max_model_market_gap": getattr(args, "max_model_market_gap", 0.35),
             "rows": len(rows),
             "top": [
                 {
@@ -516,6 +530,10 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
         limit=args.limit,
         pages=args.pages,
         probability_shrink=args.probability_shrink,
+        market_blend=getattr(args, "market_blend", 0.15),
+        max_model_market_gap=getattr(args, "max_model_market_gap", 0.35),
+        min_annual_volatility=getattr(args, "min_annual_vol", 0.0),
+        max_annual_volatility=getattr(args, "max_annual_vol", 1.75),
         min_edge=config.risk.min_edge_dollars,
         max_rows_per_asset=args.max_rows_per_asset,
         max_spread=config.risk.max_spread_dollars,
@@ -531,6 +549,12 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
             "output": str(args.output),
             "assets": assets,
             "calibration": {asset: adjustment.to_dict() for asset, adjustment in calibration_adjustments.items()},
+            "market_blend": getattr(args, "market_blend", 0.15),
+            "max_model_market_gap": getattr(args, "max_model_market_gap", 0.35),
+            "volatility_regime": {
+                "min_annual_vol": getattr(args, "min_annual_vol", 0.0),
+                "max_annual_vol": getattr(args, "max_annual_vol", 1.75),
+            },
             "rows": len(rows),
             "top": [
                 {
@@ -1179,6 +1203,8 @@ def _refresh_btc_args_for_loop(args: argparse.Namespace) -> argparse.Namespace:
         pages=args.pages,
         annual_vol=args.btc_annual_vol,
         probability_shrink=args.btc_probability_shrink,
+        market_blend=getattr(args, "btc_market_blend", 0.15),
+        max_model_market_gap=getattr(args, "btc_max_model_market_gap", 0.35),
         max_rows=args.btc_max_rows,
         spot=None,
         dry_run=False,
@@ -1192,6 +1218,10 @@ def _refresh_crypto_args_for_loop(args: argparse.Namespace) -> argparse.Namespac
         limit=args.limit,
         pages=args.pages,
         probability_shrink=args.crypto_probability_shrink,
+        market_blend=args.crypto_market_blend,
+        max_model_market_gap=args.crypto_max_model_market_gap,
+        min_annual_vol=args.crypto_min_annual_vol,
+        max_annual_vol=args.crypto_max_annual_vol,
         max_rows_per_asset=args.crypto_max_rows_per_asset,
         dry_run=False,
     )
