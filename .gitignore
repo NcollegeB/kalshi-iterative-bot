@@ -7,6 +7,7 @@ __pycache__/
 *.sqlite3
 *.sqlite3.bak-*
 *.db
+*.loop.lock
 logs/
 data/*.sqlite3
 data/*.csv

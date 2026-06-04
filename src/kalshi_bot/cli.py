@@ -18,6 +18,7 @@ from .ledger import PaperLedger
 from .model_learning import evaluate_asset_performance_guard, evaluate_bucket_performance_guard, load_asset_calibration
 from .models import BookSide, OutcomeSide, ProposedOrder, TradeMode
 from .risk import PortfolioState, RiskManager
+from .runtime_lock import ProcessLockError, exclusive_process_lock
 from .settlement import calculate_paper_settlement
 from .simulation import random_search, simulate, SimulationParams
 from .strategies.probability_file import ProbabilityFileStrategy
@@ -345,6 +346,15 @@ def run_loop(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
     if args.refresh_btc and args.refresh_crypto:
         raise SystemExit("Use only one of --refresh-btc or --refresh-crypto for a loop.")
 
+    lock_path = ledger.path.with_name(f"{ledger.path.name}.loop.lock")
+    try:
+        with exclusive_process_lock(lock_path):
+            return _run_loop_locked(args, config, client, ledger)
+    except ProcessLockError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _run_loop_locked(args: argparse.Namespace, config, client: KalshiClient, ledger: PaperLedger) -> int:
     live_actions_enabled = args.enable_live_buys or args.execute_exits
     if live_actions_enabled:
         startup = _live_loop_startup_ready(config, client, ledger)

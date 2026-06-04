@@ -1,0 +1,26 @@
+[Unit]
+Description=Kalshi bot localhost dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kalshi
+Group=kalshi
+WorkingDirectory=/opt/kalshi-bot
+EnvironmentFile=/etc/kalshi-bot/kalshi-bot.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/kalshi-bot/.venv/bin/kalshi-bot dashboard --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/kalshi-bot
+ReadWritePaths=/opt/kalshi-bot/data /opt/kalshi-bot/logs
+
+[Install]
+WantedBy=multi-user.target

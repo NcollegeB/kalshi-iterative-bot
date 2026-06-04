@@ -5,7 +5,7 @@ This folder contains a conservative starter bot for Kalshi. It is built to learn
 - Public market-data scans work without credentials.
 - Paper mode is the default.
 - Demo/live order submission is behind explicit command and environment gates.
-- Risk defaults assume a $20 tranche: $1 max position, $5 max open risk, $2 daily loss stop, and an 8 cent minimum modeled edge.
+- Risk defaults assume a $20 tranche: $4 max position, $10 max open risk, $4 daily loss stop, and an 8 cent minimum modeled edge.
 
 This is not financial advice and does not guarantee profit. Prediction markets are competitive, fees matter, and small accounts can be consumed quickly by bad fills.
 
@@ -213,6 +213,7 @@ The loop uses these safety rules:
 - `--enable-live-buys` is required before it can place new live buy orders.
 - `--execute-exits` is required before it can submit live reduce-only exits.
 - Existing live exposure on a ticker blocks another live buy on that ticker.
+- A process lock prevents multiple continuous loops from using the same local ledger.
 - Live submitted and live filled entries count toward open risk.
 - Settled live entries are removed from local open risk through `reconcile-live`.
 - `BOT_MAX_POSITION_DOLLARS` and `BOT_MAX_OPEN_RISK_DOLLARS` still apply.
@@ -258,6 +259,9 @@ kalshi-bot loop --interval-seconds 60
 Detach with `Ctrl-b` then `d`, reattach with `tmux attach -t kalshi-bot`, and stop with `Ctrl-C` inside the session.
 
 On a Linux server, run it as a `systemd` service once the dry-run behavior looks correct. Keep the private key path in the server's `.env`, never in git, and start live mode only after `kalshi-bot live-ready` passes.
+
+For the hardened always-on server setup and cutover procedure, see
+[`deploy/README.md`](deploy/README.md).
 
 ## Recommended Build Path
 
