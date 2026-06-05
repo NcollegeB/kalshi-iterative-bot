@@ -426,6 +426,16 @@ def _run_loop_locked(args: argparse.Namespace, config, client: KalshiClient, led
                 run_scan(_scan_args_for_loop(args, trading_active=trading_active), config, client, ledger)
             except KalshiApiError as exc:
                 print({"loop_iteration": iteration, "kalshi_api_error": str(exc)}, file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(
+                    {
+                        "loop_iteration": iteration,
+                        "iteration_error": exc.__class__.__name__,
+                        "message": str(exc),
+                    },
+                    file=sys.stderr,
+                    flush=True,
+                )
 
             if args.iterations and iteration >= args.iterations:
                 break

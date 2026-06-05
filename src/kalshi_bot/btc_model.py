@@ -64,7 +64,7 @@ def current_coinbase_btc_spot(timeout_seconds: int = 5) -> float:
             for key in price_path:
                 value = value[key]  # type: ignore[index]
             return float(value)
-        except (HTTPError, URLError, TimeoutError, SocketTimeout, KeyError, TypeError, ValueError) as exc:
+        except (HTTPError, URLError, TimeoutError, SocketTimeout, OSError, KeyError, TypeError, ValueError) as exc:
             errors.append(f"{url}: {exc}")
     raise RuntimeError("Unable to fetch BTC spot: " + "; ".join(errors))
 

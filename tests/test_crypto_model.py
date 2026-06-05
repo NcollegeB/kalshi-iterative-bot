@@ -4,6 +4,8 @@ from kalshi_bot.crypto_model import (
     CryptoAsset,
     CryptoMarketState,
     annualized_realized_volatility,
+    fetch_coinbase_candles,
+    generate_crypto_probability_rows,
     log_momentum,
     _generate_asset_rows,
     _tradable_price,
@@ -53,6 +55,30 @@ def test_realized_volatility_uses_candle_returns():
 def test_log_momentum_uses_recent_close_change():
     candles = [{"close": 100.0 + index} for index in range(10)]
     assert log_momentum(candles, periods=6) > 0
+
+
+def test_coinbase_candles_treats_connection_reset_as_missing_data(monkeypatch):
+    def raise_connection_reset(*args, **kwargs):
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr("kalshi_bot.crypto_model.urlopen", raise_connection_reset)
+
+    assert fetch_coinbase_candles("ETH-USD") == []
+
+
+def test_generate_crypto_rows_skips_asset_when_coinbase_state_resets(monkeypatch):
+    def raise_connection_reset(asset):
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr("kalshi_bot.crypto_model.fetch_crypto_market_state", raise_connection_reset)
+
+    rows = generate_crypto_probability_rows(
+        FakeCryptoClient(),
+        assets=["ETH"],
+        now=datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+    )
+
+    assert rows == []
 
 
 def test_generate_asset_rows_includes_asset_and_fact_inputs():

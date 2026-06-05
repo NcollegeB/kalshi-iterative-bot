@@ -28,6 +28,7 @@ SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60
 MIN_TRADE_PRICE = 0.02
 MAX_TRADE_PRICE = 0.98
 MIN_RAW_EDGE = 0.0
+COINBASE_FETCH_ERRORS = (HTTPError, URLError, TimeoutError, OSError, KeyError, TypeError, ValueError)
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,7 @@ def generate_crypto_probability_rows(
         asset = ASSETS[symbol.upper()]
         try:
             state = fetch_crypto_market_state(asset)
-        except (HTTPError, URLError, TimeoutError):
+        except COINBASE_FETCH_ERRORS:
             continue
         asset_rows = _generate_asset_rows(
             client,
@@ -161,7 +162,7 @@ def fetch_coinbase_candles(
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError):
+    except COINBASE_FETCH_ERRORS:
         return []
     candles = [
         {
