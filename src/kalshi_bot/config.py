@@ -70,6 +70,8 @@ class RiskConfig:
     performance_guard_window_trades: int = 100
     performance_guard_min_net_pnl_dollars: float = 0.0
     performance_guard_min_avg_clv: float = 0.0
+    max_live_correlated_orders_per_scan: int = 1
+    correlation_time_bucket_minutes: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,8 @@ def load_config(env_file: Path | None = None) -> AppConfig:
             performance_guard_window_trades=_int_env("BOT_PERFORMANCE_GUARD_WINDOW_TRADES", 100),
             performance_guard_min_net_pnl_dollars=_float_env("BOT_PERFORMANCE_GUARD_MIN_NET_PNL_DOLLARS", 0.0),
             performance_guard_min_avg_clv=_float_env("BOT_PERFORMANCE_GUARD_MIN_AVG_CLV", 0.0),
+            max_live_correlated_orders_per_scan=_int_env("BOT_MAX_LIVE_CORRELATED_ORDERS_PER_SCAN", 1),
+            correlation_time_bucket_minutes=_float_env("BOT_CORRELATION_TIME_BUCKET_MINUTES", 5.0),
         ),
         db_path=Path(os.getenv("BOT_DB_PATH", str(DEFAULT_DB_PATH))).expanduser(),
     )

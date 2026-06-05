@@ -17,7 +17,7 @@ from .kalshi_client import KalshiApiError, KalshiClient
 from .ledger import PaperLedger
 from .model_learning import evaluate_asset_performance_guard, evaluate_bucket_performance_guard, load_asset_calibration
 from .models import BookSide, OutcomeSide, ProposedOrder, TradeMode
-from .risk import PortfolioState, RiskManager
+from .risk import PortfolioState, RiskManager, expected_kalshi_fee_per_contract
 from .runtime_lock import ProcessLockError, exclusive_process_lock
 from .settlement import calculate_paper_settlement
 from .simulation import random_search, simulate, SimulationParams
@@ -234,6 +234,7 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
             raise SystemExit("spread-maker is paper-only; use probability-file for demo/live execution")
 
     signals = strategy.generate(client, markets)
+    correlation_rejections = _live_correlation_rejections(signals, config, mode)
     adaptive_report = _adaptive_risk_for_mode(config, ledger, mode)
     asset_performance_guard = _asset_performance_guard_for_mode(config, ledger, mode)
     bucket_performance_guard = _bucket_performance_guard_for_mode(config, ledger, mode)
@@ -258,9 +259,15 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
     order_errors = 0
     order_error_examples = []
     for signal in signals:
-        decision = risk.evaluate(signal, state)
-        approved = decision.approved
-        decision_reason = decision.reason
+        correlation_rejection = correlation_rejections.get(_signal_identity(signal))
+        if correlation_rejection is not None:
+            decision = None
+            approved = False
+            decision_reason = correlation_rejection
+        else:
+            decision = risk.evaluate(signal, state)
+            approved = decision.approved
+            decision_reason = decision.reason
         if approved and mode == TradeMode.LIVE and ledger.has_live_exposure(signal.ticker):
             approved = False
             decision_reason = "existing live exposure for ticker"
@@ -277,6 +284,9 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
             rejected += 1
             continue
 
+        if decision is None:
+            rejected += 1
+            continue
         order = _order_from_signal(client, signal, decision.count)
         if getattr(args, "dry_run", False):
             pass
@@ -330,6 +340,12 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
                 "blocked_buckets": sorted(blocked_buckets),
                 "assets": {asset: report.to_dict() for asset, report in asset_performance_guard.items()},
                 "buckets": {bucket_key: report.to_dict() for bucket_key, report in bucket_performance_guard.items()},
+            },
+            "correlation_guard": {
+                "enabled": mode == TradeMode.LIVE and config.risk.max_live_correlated_orders_per_scan > 0,
+                "max_per_bucket": config.risk.max_live_correlated_orders_per_scan,
+                "time_bucket_minutes": config.risk.correlation_time_bucket_minutes,
+                "signals_rejected": len(correlation_rejections),
             },
             "dry_run": getattr(args, "dry_run", False),
             "db_path": str(config.db_path),
@@ -465,6 +481,63 @@ def _live_loop_startup_ready(config, client: KalshiClient, ledger: PaperLedger |
         "available_balance_dollars": available_balance_dollars,
         "adaptive_risk": adaptive_report.to_dict() if adaptive_report is not None else None,
     }
+
+
+def _live_correlation_rejections(signals: list, config, mode: TradeMode) -> dict[tuple[str, str, str], str]:
+    limit = config.risk.max_live_correlated_orders_per_scan
+    if mode != TradeMode.LIVE or limit <= 0:
+        return {}
+    grouped: dict[tuple[str, int | None], list] = {}
+    for signal in signals:
+        grouped.setdefault(_correlation_bucket(signal, config.risk.correlation_time_bucket_minutes), []).append(signal)
+
+    rejections: dict[tuple[str, str, str], str] = {}
+    for bucket, bucket_signals in grouped.items():
+        if len(bucket_signals) <= limit:
+            continue
+        ranked = sorted(bucket_signals, key=_correlation_signal_score, reverse=True)
+        selected = ranked[:limit]
+        selected_label = ", ".join(f"{signal.ticker}:{signal.outcome.value}" for signal in selected)
+        for signal in ranked[limit:]:
+            rejections[_signal_identity(signal)] = (
+                f"correlation guard: lower ranked candidate in {bucket[0]} close-time bucket; "
+                f"selected {selected_label}"
+            )
+    return rejections
+
+
+def _correlation_bucket(signal, bucket_minutes: float) -> tuple[str, int | None]:
+    asset = (signal.asset or _asset_from_ticker(signal.ticker) or signal.ticker.split("-")[0]).upper()
+    if not signal.time_to_close_minutes or bucket_minutes <= 0:
+        return (asset, None)
+    bucket = int(round(signal.time_to_close_minutes / bucket_minutes) * bucket_minutes)
+    return (asset, bucket)
+
+
+def _correlation_signal_score(signal) -> tuple[float, float, float, float]:
+    net_edge = signal.edge - expected_kalshi_fee_per_contract(signal.reference_price)
+    spread = signal.spread if signal.spread is not None else 1.0
+    probability = signal.estimated_probability if signal.estimated_probability is not None else 0.0
+    price = signal.reference_price if signal.reference_price is not None else 1.0
+    return (round(net_edge, 8), -spread, probability, -price)
+
+
+def _signal_identity(signal) -> tuple[str, str, str]:
+    return (signal.ticker, signal.outcome.value, signal.created_at.isoformat())
+
+
+def _asset_from_ticker(ticker: str) -> str | None:
+    if ticker.startswith("KXBTCD"):
+        return "BTC"
+    if ticker.startswith("KXETHD"):
+        return "ETH"
+    if ticker.startswith("KXSOLD"):
+        return "SOL"
+    if ticker.startswith("KXXRPD"):
+        return "XRP"
+    if ticker.startswith("KXDOGED"):
+        return "DOGE"
+    return None
 
 
 def run_refresh_btc(args: argparse.Namespace, config, client: KalshiClient) -> int:

@@ -213,6 +213,7 @@ The loop uses these safety rules:
 - `--enable-live-buys` is required before it can place new live buy orders.
 - `--execute-exits` is required before it can submit live reduce-only exits.
 - Existing live exposure on a ticker blocks another live buy on that ticker.
+- Live crypto ladder candidates are ranked by net edge after fees and limited to one order per asset/close-time bucket by default, so the bot does not stack several correlated strikes in the same event.
 - A process lock prevents multiple continuous loops from using the same local ledger.
 - Live submitted and live filled entries count toward open risk.
 - Settled live entries are removed from local open risk through `reconcile-live`.
