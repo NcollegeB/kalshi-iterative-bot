@@ -246,6 +246,7 @@ The bot does not retrain a black-box model in live mode. It uses simple, auditab
 
 - `BOT_CALIBRATION_*` computes per-asset probability bias from final settled results, then shifts future YES probabilities by a capped fraction of that bias.
 - `BOT_PERFORMANCE_GUARD_*` computes recent realized PnL and CLV by asset. Assets with enough recent trades and bad performance are blocked from new live buys until the rolling window improves.
+- `BOT_PERFORMANCE_GUARD_START_AT` resets the guard window without deleting older trades from reporting or calibration.
 - These controls affect new entries only. Reconciliation and take-profit exits keep running for existing positions.
 
 For a simple server session, use `tmux`:

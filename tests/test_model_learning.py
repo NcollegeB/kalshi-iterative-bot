@@ -91,6 +91,16 @@ def test_performance_guard_blocks_assets_with_negative_recent_pnl_and_clv(tmp_pa
     assert "only 1 trades" in report["ETH"].reason
 
 
+def test_performance_guard_start_at_excludes_old_asset_losses(tmp_path: Path):
+    ledger = PaperLedger(tmp_path / "ledger.sqlite3")
+    settled_live_order(ledger, ticker="BTC1", probability_yes=0.8, settlement_result="no", net_pnl=-0.4)
+    settled_live_order(ledger, ticker="BTC2", probability_yes=0.6, settlement_result="no", net_pnl=-0.4)
+
+    report = evaluate_asset_performance_guard(ledger.path, min_trades=2, start_at="2026-05-29 00:00:00")
+
+    assert report == {}
+
+
 def test_bucket_performance_guard_blocks_negative_recent_buckets(tmp_path: Path):
     ledger = PaperLedger(tmp_path / "ledger.sqlite3")
     settled_live_order(ledger, ticker="BTC1", probability_yes=0.8, settlement_result="no", net_pnl=-0.4)
@@ -103,3 +113,13 @@ def test_bucket_performance_guard_blocks_negative_recent_buckets(tmp_path: Path)
     assert "net_pnl" in report["asset_side:BTC:yes"].reason
     assert report["asset_side_horizon:BTC:yes:10-30m"].blocked
     assert report["asset_side:ETH:yes"].blocked is False
+
+
+def test_performance_guard_start_at_excludes_old_bucket_losses(tmp_path: Path):
+    ledger = PaperLedger(tmp_path / "ledger.sqlite3")
+    settled_live_order(ledger, ticker="BTC1", probability_yes=0.8, settlement_result="no", net_pnl=-0.4)
+    settled_live_order(ledger, ticker="BTC2", probability_yes=0.6, settlement_result="no", net_pnl=-0.4)
+
+    report = evaluate_bucket_performance_guard(ledger.path, min_trades=2, start_at="2026-05-29 00:00:00")
+
+    assert report == {}

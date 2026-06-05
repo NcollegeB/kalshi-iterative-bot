@@ -122,8 +122,9 @@ def evaluate_asset_performance_guard(
     window_trades: int = 100,
     min_net_pnl_dollars: float = 0.0,
     min_avg_clv: float = 0.0,
+    start_at: str | None = None,
 ) -> dict[str, AssetPerformance]:
-    rows = _recent_realized_rows(db_path, mode=mode, limit=window_trades)
+    rows = _recent_realized_rows(db_path, mode=mode, limit=window_trades, start_at=start_at)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         asset = str(row.get("asset") or "").upper()
@@ -165,8 +166,9 @@ def evaluate_bucket_performance_guard(
     window_trades: int = 100,
     min_net_pnl_dollars: float = 0.0,
     min_avg_clv: float = 0.0,
+    start_at: str | None = None,
 ) -> dict[str, BucketPerformance]:
-    rows = _recent_realized_rows(db_path, mode=mode, limit=window_trades)
+    rows = _recent_realized_rows(db_path, mode=mode, limit=window_trades, start_at=start_at)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         for bucket_key in row_performance_bucket_keys(row):
@@ -216,10 +218,17 @@ def _recent_final_settlement_rows(db_path: Path, *, mode: str, limit: int) -> li
     )
 
 
-def _recent_realized_rows(db_path: Path, *, mode: str, limit: int) -> list[dict[str, Any]]:
+def _recent_realized_rows(db_path: Path, *, mode: str, limit: int, start_at: str | None = None) -> list[dict[str, Any]]:
+    start_filter = ""
+    params: tuple[Any, ...]
+    if start_at:
+        start_filter = "AND datetime(COALESCE(o.settled_at, o.updated_at, o.created_at)) >= datetime(?)"
+        params = (mode, start_at, max(1, int(limit)))
+    else:
+        params = (mode, max(1, int(limit)))
     return _query_rows(
         db_path,
-        """
+        f"""
         SELECT o.id, o.mode, o.outcome, o.price, o.count, o.fill_count,
                o.average_fill_price, o.exit_average_fill_price, o.exit_fill_count,
                o.settlement_result, o.net_pnl_dollars, s.asset, s.spread,
@@ -232,10 +241,11 @@ def _recent_realized_rows(db_path: Path, *, mode: str, limit: int) -> list[dict[
             o.status IN ('paper_settled', 'live_closed', 'live_settled')
             OR COALESCE(o.exit_fill_count, 0) > 0
           )
+          {start_filter}
         ORDER BY COALESCE(o.settled_at, o.updated_at, o.created_at) DESC, o.id DESC
         LIMIT ?
         """,
-        (mode, max(1, int(limit))),
+        params,
     )
 
 

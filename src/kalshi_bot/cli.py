@@ -682,6 +682,7 @@ def _asset_performance_guard_for_mode(config, ledger: PaperLedger, mode: TradeMo
         window_trades=config.risk.performance_guard_window_trades,
         min_net_pnl_dollars=config.risk.performance_guard_min_net_pnl_dollars,
         min_avg_clv=config.risk.performance_guard_min_avg_clv,
+        start_at=config.risk.performance_guard_start_at,
     )
 
 
@@ -695,6 +696,7 @@ def _bucket_performance_guard_for_mode(config, ledger: PaperLedger, mode: TradeM
         window_trades=config.risk.performance_guard_window_trades,
         min_net_pnl_dollars=config.risk.performance_guard_min_net_pnl_dollars,
         min_avg_clv=config.risk.performance_guard_min_avg_clv,
+        start_at=config.risk.performance_guard_start_at,
     )
 
 
@@ -1119,6 +1121,7 @@ def run_live_ready(config, client: KalshiClient, ledger: PaperLedger | None = No
                 "performance_guard_window_trades": config.risk.performance_guard_window_trades,
                 "performance_guard_min_net_pnl_dollars": config.risk.performance_guard_min_net_pnl_dollars,
                 "performance_guard_min_avg_clv": config.risk.performance_guard_min_avg_clv,
+                "performance_guard_start_at": config.risk.performance_guard_start_at,
             },
             "adaptive_risk": adaptive_report.to_dict() if adaptive_report is not None else None,
             "balance": balance,
