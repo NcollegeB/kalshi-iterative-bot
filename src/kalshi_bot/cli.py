@@ -17,6 +17,7 @@ from .kalshi_client import KalshiApiError, KalshiClient
 from .ledger import PaperLedger
 from .model_learning import evaluate_asset_performance_guard, evaluate_bucket_performance_guard, load_asset_calibration
 from .models import BookSide, OutcomeSide, ProposedOrder, TradeMode
+from .orderflow import OrderflowConfig
 from .risk import PortfolioState, RiskManager, expected_kalshi_fee_per_contract
 from .runtime_lock import ProcessLockError, exclusive_process_lock
 from .settlement import calculate_paper_settlement
@@ -223,7 +224,12 @@ def run_scan(args: argparse.Namespace, config, client: KalshiClient, ledger: Pap
         exclude_multivariate=not args.include_multivariate,
     )
     if args.strategy == "probability-file":
-        strategy = ProbabilityFileStrategy(args.probability_file, config.risk.min_edge_dollars)
+        strategy = ProbabilityFileStrategy(
+            args.probability_file,
+            config.risk.min_edge_dollars,
+            base_slippage=config.risk.slippage_base_dollars,
+            spread_slippage_factor=config.risk.slippage_spread_factor,
+        )
     else:
         strategy = SpreadMakerPaperStrategy(
             min_volume=args.min_volume,
@@ -633,6 +639,9 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
         min_horizon_minutes=config.risk.min_time_to_close_minutes,
         max_horizon_minutes=config.risk.max_time_to_close_minutes,
         calibration_adjustments=calibration_adjustments,
+        base_slippage=config.risk.slippage_base_dollars,
+        spread_slippage_factor=config.risk.slippage_spread_factor,
+        orderflow_config=_orderflow_config(config),
     )
     if not args.dry_run:
         write_crypto_probability_csv(args.output, rows)
@@ -648,6 +657,11 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
                 "min_annual_vol": getattr(args, "min_annual_vol", 0.0),
                 "max_annual_vol": getattr(args, "max_annual_vol", 1.75),
             },
+            "edge_costs": {
+                "slippage_base": config.risk.slippage_base_dollars,
+                "slippage_spread_factor": config.risk.slippage_spread_factor,
+            },
+            "orderflow": _orderflow_config(config).__dict__,
             "rows": len(rows),
             "top": [
                 {
@@ -667,6 +681,17 @@ def run_refresh_crypto(args: argparse.Namespace, config, client: KalshiClient) -
         }
     )
     return 0
+
+
+def _orderflow_config(config) -> OrderflowConfig:
+    return OrderflowConfig(
+        enabled=config.risk.orderflow_enabled,
+        lookback_minutes=config.risk.orderflow_lookback_minutes,
+        min_trades=config.risk.orderflow_min_trades,
+        min_contracts=config.risk.orderflow_min_contracts,
+        large_trade_contracts=config.risk.orderflow_large_trade_contracts,
+        max_probability_adjustment=config.risk.orderflow_max_probability_adjustment,
+    )
 
 
 def _asset_calibration_for_refresh(config):
@@ -1132,6 +1157,14 @@ def run_live_ready(config, client: KalshiClient, ledger: PaperLedger | None = No
                 "performance_guard_min_net_pnl_dollars": config.risk.performance_guard_min_net_pnl_dollars,
                 "performance_guard_min_avg_clv": config.risk.performance_guard_min_avg_clv,
                 "performance_guard_start_at": config.risk.performance_guard_start_at,
+                "slippage_base_dollars": config.risk.slippage_base_dollars,
+                "slippage_spread_factor": config.risk.slippage_spread_factor,
+                "orderflow_enabled": config.risk.orderflow_enabled,
+                "orderflow_lookback_minutes": config.risk.orderflow_lookback_minutes,
+                "orderflow_min_trades": config.risk.orderflow_min_trades,
+                "orderflow_min_contracts": config.risk.orderflow_min_contracts,
+                "orderflow_large_trade_contracts": config.risk.orderflow_large_trade_contracts,
+                "orderflow_max_probability_adjustment": config.risk.orderflow_max_probability_adjustment,
             },
             "adaptive_risk": adaptive_report.to_dict() if adaptive_report is not None else None,
             "balance": balance,

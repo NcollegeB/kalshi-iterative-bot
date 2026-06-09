@@ -34,6 +34,8 @@ class Market:
     settlement_value: float | None
     settlement_ts: str | None
     category: str | None
+    yes_bid_size: float = 0.0
+    no_bid_size: float = 0.0
 
     @classmethod
     def from_api(cls, raw: dict) -> "Market":
@@ -49,6 +51,8 @@ class Market:
             settlement_value=_optional_float(raw.get("settlement_value_dollars")),
             settlement_ts=raw.get("settlement_ts"),
             category=raw.get("category"),
+            yes_bid_size=_as_float(raw.get("yes_bid_size_fp", raw.get("yes_bid_size", 0))),
+            no_bid_size=_as_float(raw.get("no_bid_size_fp", raw.get("no_bid_size", 0))),
         )
 
 

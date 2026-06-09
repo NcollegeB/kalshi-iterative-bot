@@ -72,6 +72,27 @@ class KalshiClient:
         data = self._request("GET", f"/markets/{ticker}", authenticated=False)
         return Market.from_api(data.get("market", data))
 
+    def list_trades(
+        self,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+        ticker: str | None = None,
+        min_ts: int | None = None,
+        max_ts: int | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        query: dict[str, Any] = {"limit": limit}
+        if cursor:
+            query["cursor"] = cursor
+        if ticker:
+            query["ticker"] = ticker
+        if min_ts is not None:
+            query["min_ts"] = min_ts
+        if max_ts is not None:
+            query["max_ts"] = max_ts
+        data = self._request("GET", f"/markets/trades?{urlencode(query)}", authenticated=False)
+        return list(data.get("trades", [])), data.get("cursor")
+
     def get_balance(self) -> dict[str, Any]:
         return self._request("GET", "/portfolio/balance", authenticated=True)
 

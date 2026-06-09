@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kalshi_bot.edge_math import edge_after_costs
 from kalshi_bot.kalshi_client import KalshiApiError, KalshiClient
 from kalshi_bot.models import Market, OutcomeSide, Signal, TopOfBook
 
@@ -19,9 +20,18 @@ class ProbabilityEstimate:
 class ProbabilityFileStrategy:
     name = "probability_file"
 
-    def __init__(self, probability_file: Path, min_edge: float) -> None:
+    def __init__(
+        self,
+        probability_file: Path,
+        min_edge: float,
+        *,
+        base_slippage: float = 0.01,
+        spread_slippage_factor: float = 0.25,
+    ) -> None:
         self.probability_file = probability_file
         self.min_edge = min_edge
+        self.base_slippage = base_slippage
+        self.spread_slippage_factor = spread_slippage_factor
         self.estimates = {estimate.ticker: estimate for estimate in self._read_estimates()}
 
     def generate(self, client: KalshiClient, markets: list[Market]) -> list[Signal]:
@@ -43,8 +53,16 @@ class ProbabilityFileStrategy:
                 metrics=metrics,
             )
             if yes_ask is not None:
-                yes_edge = estimate.probability - yes_ask
-                if yes_edge >= self.min_edge:
+                yes_spread = _outcome_spread(top, OutcomeSide.YES)
+                yes_edge = edge_after_costs(
+                    probability_yes=estimate.probability,
+                    outcome=OutcomeSide.YES,
+                    executable_price=yes_ask,
+                    spread=yes_spread,
+                    base_slippage=self.base_slippage,
+                    spread_slippage_factor=self.spread_slippage_factor,
+                )
+                if yes_edge.net_edge_after_costs >= self.min_edge:
                     signals.append(
                         Signal.now(
                             strategy=self.name,
@@ -53,16 +71,29 @@ class ProbabilityFileStrategy:
                             outcome=OutcomeSide.YES,
                             estimated_probability=estimate.probability,
                             reference_price=yes_ask,
-                            edge=yes_edge,
-                            reason=f"independent probability exceeds YES ask; {estimate.notes}",
-                            spread=_outcome_spread(top, OutcomeSide.YES),
+                            edge=yes_edge.edge_before_fees,
+                            reason=(
+                                "adjusted probability clears YES executable price after fee/slippage; "
+                                f"net_edge_after_costs={yes_edge.net_edge_after_costs:.4f} "
+                                f"prob_edge={yes_edge.probability_edge:.4f} "
+                                f"slippage_penalty={yes_edge.slippage_penalty:.4f}; {estimate.notes}"
+                            ),
+                            spread=yes_spread,
                             **metadata,
                         )
                     )
             if no_ask is not None:
                 no_probability = 1.0 - estimate.probability
-                no_edge = no_probability - no_ask
-                if no_edge >= self.min_edge:
+                no_spread = _outcome_spread(top, OutcomeSide.NO)
+                no_edge = edge_after_costs(
+                    probability_yes=estimate.probability,
+                    outcome=OutcomeSide.NO,
+                    executable_price=no_ask,
+                    spread=no_spread,
+                    base_slippage=self.base_slippage,
+                    spread_slippage_factor=self.spread_slippage_factor,
+                )
+                if no_edge.net_edge_after_costs >= self.min_edge:
                     signals.append(
                         Signal.now(
                             strategy=self.name,
@@ -71,9 +102,14 @@ class ProbabilityFileStrategy:
                             outcome=OutcomeSide.NO,
                             estimated_probability=no_probability,
                             reference_price=no_ask,
-                            edge=no_edge,
-                            reason=f"independent probability exceeds NO ask; {estimate.notes}",
-                            spread=_outcome_spread(top, OutcomeSide.NO),
+                            edge=no_edge.edge_before_fees,
+                            reason=(
+                                "adjusted probability clears NO executable price after fee/slippage; "
+                                f"net_edge_after_costs={no_edge.net_edge_after_costs:.4f} "
+                                f"prob_edge={no_edge.probability_edge:.4f} "
+                                f"slippage_penalty={no_edge.slippage_penalty:.4f}; {estimate.notes}"
+                            ),
+                            spread=no_spread,
                             **metadata,
                         )
                     )

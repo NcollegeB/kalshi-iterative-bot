@@ -12,13 +12,26 @@ from kalshi_bot.crypto_model import (
 )
 from kalshi_bot.model_learning import CalibrationAdjustment
 from kalshi_bot.models import Market, TopOfBook
+from kalshi_bot.orderflow import OrderflowAnalyzer, OrderflowConfig
 
 
 class FakeCryptoClient:
-    def __init__(self, *, ticker_suffix: str = "T100", yes_bid: float = 0.30, no_bid: float = 0.60):
+    def __init__(
+        self,
+        *,
+        ticker_suffix: str = "T100",
+        yes_bid: float = 0.30,
+        no_bid: float = 0.60,
+        yes_bid_size: float = 10,
+        no_bid_size: float = 10,
+        trades: list[dict] | None = None,
+    ):
         self.ticker_suffix = ticker_suffix
         self.yes_bid = yes_bid
         self.no_bid = no_bid
+        self.yes_bid_size = yes_bid_size
+        self.no_bid_size = no_bid_size
+        self.trades = trades or []
 
     def list_markets(self, **kwargs):
         series = kwargs["series_ticker"]
@@ -36,13 +49,23 @@ class FakeCryptoClient:
                     settlement_value=None,
                     settlement_ts=None,
                     category="Crypto",
+                    yes_bid_size=self.yes_bid_size,
+                    no_bid_size=self.no_bid_size,
                 )
             ],
             None,
         )
 
     def get_orderbook(self, ticker):
-        return TopOfBook(yes_bid=self.yes_bid, yes_bid_size=10, no_bid=self.no_bid, no_bid_size=10)
+        return TopOfBook(
+            yes_bid=self.yes_bid,
+            yes_bid_size=self.yes_bid_size,
+            no_bid=self.no_bid,
+            no_bid_size=self.no_bid_size,
+        )
+
+    def list_trades(self, **kwargs):
+        return self.trades, None
 
 
 def test_realized_volatility_uses_candle_returns():
@@ -95,8 +118,10 @@ def test_generate_asset_rows_includes_asset_and_fact_inputs():
         limit=100,
         pages=1,
         probability_shrink=1.0,
-        min_edge=0.05,
+        min_edge=-1.0,
         max_rows=4,
+        base_slippage=0.0,
+        spread_slippage_factor=0.0,
     )
 
     assert len(rows) == 1
@@ -104,6 +129,69 @@ def test_generate_asset_rows_includes_asset_and_fact_inputs():
     assert "vol_source=coinbase_1h_realized" in rows[0].notes
     assert "momentum_6h=0.0100" in rows[0].notes
     assert "raw_edge=" in rows[0].notes
+
+
+def test_generate_asset_rows_uses_orderflow_adjusted_net_edge():
+    client = FakeCryptoClient(
+        yes_bid=0.30,
+        no_bid=0.60,
+        yes_bid_size=80,
+        no_bid_size=20,
+        trades=[
+            {
+                "ticker": "KXETHD-26MAY2817-T100",
+                "count_fp": "40.00",
+                "created_time": "2026-05-27T20:00:00Z",
+                "taker_outcome_side": "yes",
+                "yes_price_dollars": "0.4100",
+            },
+            {
+                "ticker": "KXETHD-26MAY2817-T100",
+                "count_fp": "30.00",
+                "created_time": "2026-05-27T20:01:00Z",
+                "taker_outcome_side": "yes",
+                "yes_price_dollars": "0.4300",
+            },
+            {
+                "ticker": "KXETHD-26MAY2817-T100",
+                "count_fp": "10.00",
+                "created_time": "2026-05-27T20:02:00Z",
+                "taker_outcome_side": "no",
+                "yes_price_dollars": "0.4200",
+            },
+        ],
+    )
+    rows = _generate_asset_rows(
+        client,
+        asset=CryptoAsset("ETH", "ETH-USD", "KXETHD", 0.70),
+        state=CryptoMarketState(
+            spot=100,
+            annual_volatility=0.70,
+            volatility_source="coinbase_1h_realized",
+            momentum_6h=0.01,
+        ),
+        now=datetime(2026, 5, 27, 21, tzinfo=timezone.utc),
+        limit=100,
+        pages=1,
+        probability_shrink=1.0,
+        market_blend=0.0,
+        max_model_market_gap=None,
+        min_edge=0.05,
+        max_rows=4,
+        base_slippage=0.0,
+        spread_slippage_factor=0.0,
+        orderflow_analyzer=OrderflowAnalyzer(
+            client,
+            OrderflowConfig(min_trades=1, min_contracts=1, large_trade_contracts=25),
+        ),
+    )
+
+    assert len(rows) == 1
+    assert "crypto_orderflow_model" in rows[0].notes
+    assert "orderflow_adj=" in rows[0].notes
+    assert "orderflow_reason=recent_taker_and_book_pressure" in rows[0].notes
+    assert "slippage_penalty=" in rows[0].notes
+    assert "fee_haircut=" in rows[0].notes
 
 
 def test_generate_asset_rows_rejects_shrink_only_tail_edge():
@@ -143,8 +231,10 @@ def test_generate_asset_rows_applies_spread_and_horizon_filters():
         "probability_shrink": 1.0,
         "market_blend": 0.0,
         "max_model_market_gap": None,
-        "min_edge": 0.05,
+        "min_edge": -1.0,
         "max_rows": 4,
+        "base_slippage": 0.0,
+        "spread_slippage_factor": 0.0,
     }
 
     wide_spread_rows = _generate_asset_rows(FakeCryptoClient(), max_spread=0.02, **common)
@@ -170,8 +260,10 @@ def test_generate_asset_rows_applies_calibration_adjustment():
         "probability_shrink": 1.0,
         "market_blend": 0.0,
         "max_model_market_gap": None,
-        "min_edge": 0.05,
+        "min_edge": -1.0,
         "max_rows": 4,
+        "base_slippage": 0.0,
+        "spread_slippage_factor": 0.0,
     }
     base_rows = _generate_asset_rows(FakeCryptoClient(), **common)
     calibrated_rows = _generate_asset_rows(
@@ -207,8 +299,10 @@ def test_generate_asset_rows_blends_probability_toward_market_midpoint():
         "pages": 1,
         "probability_shrink": 1.0,
         "max_model_market_gap": None,
-        "min_edge": 0.01,
+        "min_edge": -1.0,
         "max_rows": 4,
+        "base_slippage": 0.0,
+        "spread_slippage_factor": 0.0,
     }
     base_rows = _generate_asset_rows(
         FakeCryptoClient(yes_bid=0.30, no_bid=0.60),

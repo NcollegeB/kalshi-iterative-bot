@@ -222,6 +222,7 @@ The loop uses these safety rules:
 - Adaptive risk stays at `1.0x` until enough final results exist, moves up only when PnL, CLV proxy, Brier/log loss, and drawdown checks pass, and moves down when calibration or drawdown fails.
 - Calibration learning uses final settled live results to adjust each asset's model YES probability before edge checks. It waits for `BOT_CALIBRATION_MIN_SAMPLES` per asset and applies only a partial, capped adjustment.
 - The performance guard blocks new live buys for assets with at least `BOT_PERFORMANCE_GUARD_MIN_TRADES` recent realized trades when recent PnL or CLV is not positive. Existing positions are still reconciled and checked for exits.
+- Crypto candidates now use `edge = adjusted_probability - executable_price - fee_haircut - slippage_penalty`. The adjusted probability starts from the crypto model/market blend and adds a capped Kalshi orderflow correction from recent public trades, large taker flow, top-of-book imbalance, and trade-price momentum.
 
 Current tightened crypto defaults favor cleaner fills:
 
@@ -232,6 +233,10 @@ BOT_MIN_TIME_TO_CLOSE_MINUTES=10
 BOT_MAX_TIME_TO_CLOSE_MINUTES=60
 BOT_CALIBRATION_ENABLED=true
 BOT_PERFORMANCE_GUARD_ENABLED=true
+BOT_SLIPPAGE_BASE_DOLLARS=0.01
+BOT_SLIPPAGE_SPREAD_FACTOR=0.25
+BOT_ORDERFLOW_ENABLED=true
+BOT_ORDERFLOW_MAX_PROBABILITY_ADJUSTMENT=0.04
 ```
 
 ## Adaptive Risk Scaling

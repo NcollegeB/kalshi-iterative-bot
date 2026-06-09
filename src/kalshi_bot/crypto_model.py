@@ -19,8 +19,11 @@ from .btc_model import (
     probability_above_strike,
     shrink_probability,
 )
+from .edge_math import edge_after_costs
 from .forecasting import blend_probability_with_market, market_yes_probability, model_market_gap
 from .model_learning import CalibrationAdjustment
+from .models import OutcomeSide, TopOfBook
+from .orderflow import OrderflowAnalyzer, OrderflowConfig, OrderflowSummary
 
 
 DEFAULT_ASSETS = ("BTC", "ETH", "SOL", "XRP", "DOGE")
@@ -89,8 +92,12 @@ def generate_crypto_probability_rows(
     max_model_market_gap: float | None = 0.35,
     min_annual_volatility: float | None = 0.0,
     max_annual_volatility: float | None = 1.75,
+    base_slippage: float = 0.01,
+    spread_slippage_factor: float = 0.25,
+    orderflow_config: OrderflowConfig | None = None,
 ) -> list[CryptoProbabilityRow]:
     rows: list[CryptoProbabilityRow] = []
+    orderflow_analyzer = OrderflowAnalyzer(client, orderflow_config or OrderflowConfig(enabled=False))
     for symbol in assets:
         asset = ASSETS[symbol.upper()]
         try:
@@ -115,6 +122,9 @@ def generate_crypto_probability_rows(
             max_model_market_gap=max_model_market_gap,
             min_annual_volatility=min_annual_volatility,
             max_annual_volatility=max_annual_volatility,
+            base_slippage=base_slippage,
+            spread_slippage_factor=spread_slippage_factor,
+            orderflow_analyzer=orderflow_analyzer,
         )
         rows.extend(asset_rows)
     return sorted(rows, key=lambda row: row.best_edge, reverse=True)
@@ -230,6 +240,9 @@ def _generate_asset_rows(
     max_model_market_gap: float | None = 0.35,
     min_annual_volatility: float | None = 0.0,
     max_annual_volatility: float | None = 1.75,
+    base_slippage: float = 0.01,
+    spread_slippage_factor: float = 0.25,
+    orderflow_analyzer: OrderflowAnalyzer | None = None,
 ) -> list[CryptoProbabilityRow]:
     if not _volatility_in_regime(
         state.annual_volatility,
@@ -240,6 +253,8 @@ def _generate_asset_rows(
 
     rows: list[CryptoProbabilityRow] = []
     markets = _fetch_series_markets(client, series_ticker=asset.threshold_series, limit=limit, pages=pages)
+    if orderflow_analyzer is not None:
+        orderflow_analyzer.prefetch([market.ticker for market in markets], now=now)
     for market in markets:
         strike = parse_threshold_strike(market.ticker)
         close_time = parse_api_datetime(market.close_time)
@@ -258,6 +273,12 @@ def _generate_asset_rows(
         no_ask = _complement_price(market.yes_bid)
         yes_bid = market.yes_bid
         no_bid = market.no_bid
+        top = TopOfBook(
+            yes_bid=yes_bid,
+            yes_bid_size=market.yes_bid_size,
+            no_bid=no_bid,
+            no_bid_size=market.no_bid_size,
+        )
         if yes_ask is None and no_ask is None:
             top = client.get_orderbook(market.ticker)
             yes_ask = top.yes_ask
@@ -284,38 +305,68 @@ def _generate_asset_rows(
         gap = model_market_gap(calibrated_probability, market_probability)
         if max_model_market_gap is not None and gap is not None and gap > max_model_market_gap:
             continue
-        estimated_probability = blend_probability_with_market(
+        blended_probability = blend_probability_with_market(
             calibrated_probability,
             market_probability,
             market_weight=market_blend,
         )
-        yes_edge = (
-            estimated_probability - yes_ask if yes_ask is not None and _tradable_price(yes_ask) else float("-inf")
+        orderflow = (
+            orderflow_analyzer.summarize(market.ticker, top=top, now=now)
+            if orderflow_analyzer is not None
+            else OrderflowSummary.disabled()
         )
-        no_edge = (
-            (1.0 - estimated_probability) - no_ask
+        estimated_probability = _bounded_probability(blended_probability + orderflow.probability_adjustment)
+
+        yes_spread = _outcome_spread(yes_bid=yes_bid, no_bid=no_bid, yes_ask=yes_ask, no_ask=no_ask, side="yes")
+        no_spread = _outcome_spread(yes_bid=yes_bid, no_bid=no_bid, yes_ask=yes_ask, no_ask=no_ask, side="no")
+        yes_breakdown = (
+            edge_after_costs(
+                probability_yes=estimated_probability,
+                outcome=OutcomeSide.YES,
+                executable_price=yes_ask,
+                spread=yes_spread,
+                base_slippage=base_slippage,
+                spread_slippage_factor=spread_slippage_factor,
+            )
+            if yes_ask is not None and _tradable_price(yes_ask)
+            else None
+        )
+        no_breakdown = (
+            edge_after_costs(
+                probability_yes=estimated_probability,
+                outcome=OutcomeSide.NO,
+                executable_price=no_ask,
+                spread=no_spread,
+                base_slippage=base_slippage,
+                spread_slippage_factor=spread_slippage_factor,
+            )
             if no_ask is not None and _tradable_price(no_ask)
-            else float("-inf")
+            else None
         )
-        best_side = "yes" if yes_edge >= no_edge else "no"
-        best_edge = max(yes_edge, no_edge)
-        best_spread = _outcome_spread(
-            yes_bid=yes_bid,
-            no_bid=no_bid,
-            yes_ask=yes_ask,
-            no_ask=no_ask,
-            side=best_side,
-        )
-        if max_spread is not None and (best_spread is None or best_spread > max_spread):
+        yes_net_edge = yes_breakdown.net_edge_after_costs if yes_breakdown is not None else float("-inf")
+        no_net_edge = no_breakdown.net_edge_after_costs if no_breakdown is not None else float("-inf")
+        best_side = "yes" if yes_net_edge >= no_net_edge else "no"
+        best_edge = max(yes_net_edge, no_net_edge)
+        best_breakdown = yes_breakdown if best_side == "yes" else no_breakdown
+        if best_breakdown is None:
             continue
-        raw_yes_edge = raw_probability - yes_ask if yes_ask is not None and _tradable_price(yes_ask) else float("-inf")
+        best_spread = yes_spread if best_side == "yes" else no_spread
+        executable_price = yes_ask if best_side == "yes" else no_ask
+        side_probability = estimated_probability if best_side == "yes" else 1.0 - estimated_probability
+        raw_yes_edge = (
+            raw_probability - yes_ask if yes_ask is not None and _tradable_price(yes_ask) else float("-inf")
+        )
         raw_no_edge = (
             (1.0 - raw_probability) - no_ask
             if no_ask is not None and _tradable_price(no_ask)
             else float("-inf")
         )
         raw_side_edge = raw_yes_edge if best_side == "yes" else raw_no_edge
+        if max_spread is not None and (best_spread is None or best_spread > max_spread):
+            continue
         if best_edge < min_edge:
+            continue
+        if best_breakdown.probability_edge < MIN_RAW_EDGE:
             continue
         if raw_side_edge < MIN_RAW_EDGE:
             continue
@@ -325,18 +376,25 @@ def _generate_asset_rows(
                 ticker=market.ticker,
                 estimated_probability=round(estimated_probability, 4),
                 notes=(
-                    f"{asset.symbol} crypto model side={best_side} edge={best_edge:.4f} "
+                    f"{asset.symbol} crypto_orderflow_model side={best_side} edge={best_edge:.4f} "
+                    f"prob_edge={best_breakdown.probability_edge:.4f} "
+                    f"slippage_penalty={best_breakdown.slippage_penalty:.4f} "
+                    f"fee_haircut={best_breakdown.fee_haircut:.4f} "
+                    f"edge_before_fees={best_breakdown.edge_before_fees:.4f} "
                     f"spot={state.spot:.6g} strike={strike:.6g} close_time={market.close_time} "
                     f"horizon_min={horizon_minutes:.1f} annual_vol={state.annual_volatility:.4f} "
                     f"vol_source={state.volatility_source} shrink={probability_shrink:.2f} "
                     f"market_blend={market_blend:.2f} market_p_yes={_fmt_optional(market_probability)} "
                     f"model_market_gap={_fmt_optional(gap)} "
+                    f"blended_p_yes={blended_probability:.4f} adjusted_p_yes={estimated_probability:.4f} "
                     f"vol_regime={_fmt_optional(min_annual_volatility)}-{_fmt_optional(max_annual_volatility)} "
                     f"momentum_6h={_fmt_optional(state.momentum_6h)} base_p_yes={base_probability:.4f} "
                     f"calibrated_p_yes={calibrated_probability:.4f} "
                     f"raw_p_yes={raw_probability:.4f} "
                     f"raw_edge={raw_side_edge:.4f} "
                     f"{_calibration_note(calibration_adjustment)}"
+                    f"{orderflow.note()} "
+                    f"side_probability={side_probability:.4f} executable_price={_fmt_optional(executable_price)} "
                     f"yes_ask={_fmt_optional(yes_ask)} no_ask={_fmt_optional(no_ask)}"
                 ),
                 best_edge=round(best_edge, 4),
@@ -406,6 +464,10 @@ def _apply_calibration(probability: float, adjustment: CalibrationAdjustment | N
     if adjustment is None:
         return probability
     return max(0.001, min(0.999, probability + adjustment.adjustment))
+
+
+def _bounded_probability(probability: float) -> float:
+    return max(0.001, min(0.999, probability))
 
 
 def _volatility_in_regime(

@@ -73,6 +73,14 @@ class RiskConfig:
     performance_guard_start_at: str | None = None
     max_live_correlated_orders_per_scan: int = 1
     correlation_time_bucket_minutes: float = 5.0
+    slippage_base_dollars: float = 0.01
+    slippage_spread_factor: float = 0.25
+    orderflow_enabled: bool = True
+    orderflow_lookback_minutes: float = 30.0
+    orderflow_min_trades: int = 3
+    orderflow_min_contracts: float = 20.0
+    orderflow_large_trade_contracts: float = 25.0
+    orderflow_max_probability_adjustment: float = 0.04
 
 
 @dataclass(frozen=True)
@@ -138,6 +146,14 @@ def load_config(env_file: Path | None = None) -> AppConfig:
             performance_guard_start_at=_empty_to_none(os.getenv("BOT_PERFORMANCE_GUARD_START_AT")),
             max_live_correlated_orders_per_scan=_int_env("BOT_MAX_LIVE_CORRELATED_ORDERS_PER_SCAN", 1),
             correlation_time_bucket_minutes=_float_env("BOT_CORRELATION_TIME_BUCKET_MINUTES", 5.0),
+            slippage_base_dollars=_float_env("BOT_SLIPPAGE_BASE_DOLLARS", 0.01),
+            slippage_spread_factor=_float_env("BOT_SLIPPAGE_SPREAD_FACTOR", 0.25),
+            orderflow_enabled=_bool_env("BOT_ORDERFLOW_ENABLED", True),
+            orderflow_lookback_minutes=_float_env("BOT_ORDERFLOW_LOOKBACK_MINUTES", 30.0),
+            orderflow_min_trades=_int_env("BOT_ORDERFLOW_MIN_TRADES", 3),
+            orderflow_min_contracts=_float_env("BOT_ORDERFLOW_MIN_CONTRACTS", 20.0),
+            orderflow_large_trade_contracts=_float_env("BOT_ORDERFLOW_LARGE_TRADE_CONTRACTS", 25.0),
+            orderflow_max_probability_adjustment=_float_env("BOT_ORDERFLOW_MAX_PROBABILITY_ADJUSTMENT", 0.04),
         ),
         db_path=Path(os.getenv("BOT_DB_PATH", str(DEFAULT_DB_PATH))).expanduser(),
     )
