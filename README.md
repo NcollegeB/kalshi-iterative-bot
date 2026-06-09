@@ -5,7 +5,7 @@ This folder contains a conservative starter bot for Kalshi. It is built to learn
 - Public market-data scans work without credentials.
 - Paper mode is the default.
 - Demo/live order submission is behind explicit command and environment gates.
-- Risk defaults assume a $20 tranche: $4 max position, $10 max open risk, $4 daily loss stop, and an 8 cent minimum modeled edge.
+- Risk defaults assume a $20 tranche: $4 max position, $5 max open risk, $2 daily loss stop, and an 8 cent minimum modeled edge.
 
 This is not financial advice and does not guarantee profit. Prediction markets are competitive, fees matter, and small accounts can be consumed quickly by bad fills.
 
@@ -23,7 +23,7 @@ Implemented:
 - Reduce-only live take-profit exits.
 - Continuous loop command for unattended checking.
 - Read-only localhost dashboard with P&L, returns, and calibration metrics.
-- Adaptive risk multiplier that scales sizing up/down from settled trade evidence.
+- Optional adaptive risk, calibration, and performance guard modules for later controlled experiments. They are disabled by default so current live decisions do not inherit old-result bias.
 - Unit tests for risk sizing and orderbook price complements.
 
 Not implemented yet:
@@ -111,7 +111,7 @@ The multi-crypto helper is additive and separate from the BTC helper. By default
 .venv/bin/kalshi-bot refresh-crypto
 ```
 
-It currently supports BTC, ETH, SOL, XRP, and DOGE daily threshold markets when Kalshi lists them. Inputs are fact-based: Coinbase spot, Coinbase hourly candles for realized volatility, Kalshi close time, Kalshi top-of-book prices, and a conservative probability shrink. Keep this in dry-run until the BTC-only loop is stable enough to restart intentionally with `--refresh-crypto`.
+It currently supports BTC, ETH, SOL, XRP, and DOGE daily threshold markets when Kalshi lists them. Inputs are fact-based: Coinbase spot, Coinbase hourly candles for realized volatility, Kalshi close time, Kalshi top-of-book prices, Kalshi recent public orderflow, and a conservative probability shrink. The live loop now uses `--refresh-crypto` when live buying is enabled.
 
 ## Demo And Live Gates
 
@@ -142,7 +142,7 @@ Live order submission only works through the `probability-file` strategy:
 .venv/bin/kalshi-bot scan --strategy probability-file --probability-file data/probabilities.csv --live
 ```
 
-Keep live trading off until paper results show a repeatable edge after fees and slippage. For first live use, keep `BOT_MAX_POSITION_DOLLARS=1.00` and use only one or two hand-checked probability-file rows.
+Keep live trading off until paper results show a repeatable edge after fees and slippage. For small-account live use, keep hard caps tight and review the dashboard after every session.
 
 ## Settlement Reconciliation
 
@@ -187,13 +187,13 @@ The loop command repeatedly reconciles settled live entries, checks open live en
 
 ```bash
 cd /Users/nathan/Documents/Kalshi
-.venv/bin/kalshi-bot loop --interval-seconds 60 --refresh-btc
+.venv/bin/kalshi-bot loop --interval-seconds 60 --refresh-crypto
 ```
 
 Test a single cycle without placing live orders:
 
 ```bash
-.venv/bin/kalshi-bot loop --iterations 1 --interval-seconds 1 --profit-pct 100 --refresh-btc
+.venv/bin/kalshi-bot loop --iterations 1 --interval-seconds 1 --profit-pct 100 --refresh-crypto
 ```
 
 Live buying and live exit submission require explicit flags plus the live opt-in:
@@ -202,7 +202,7 @@ Live buying and live exit submission require explicit flags plus the live opt-in
 export KALSHI_ALLOW_LIVE=I_ACCEPT_KALSHI_LIVE_RISK
 .venv/bin/kalshi-bot loop \
   --interval-seconds 60 \
-  --refresh-btc \
+  --refresh-crypto \
   --enable-live-buys \
   --execute-exits \
   --profit-pct 100
@@ -219,9 +219,7 @@ The loop uses these safety rules:
 - Settled live entries are removed from local open risk through `reconcile-live`.
 - `BOT_MAX_POSITION_DOLLARS` and `BOT_MAX_OPEN_RISK_DOLLARS` still apply.
 - `BOT_ALLOWED_ASSETS`, `BOT_MAX_SPREAD_DOLLARS`, `BOT_MIN_TIME_TO_CLOSE_MINUTES`, and `BOT_MAX_TIME_TO_CLOSE_MINUTES` reject candidates before order sizing. Crypto refresh also skips assets outside `BOT_ALLOWED_ASSETS`.
-- Adaptive risk stays at `1.0x` until enough final results exist, moves up only when PnL, CLV proxy, Brier/log loss, and drawdown checks pass, and moves down when calibration or drawdown fails.
-- Calibration learning uses final settled live results to adjust each asset's model YES probability before edge checks. It waits for `BOT_CALIBRATION_MIN_SAMPLES` per asset and applies only a partial, capped adjustment.
-- The performance guard blocks new live buys for assets with at least `BOT_PERFORMANCE_GUARD_MIN_TRADES` recent realized trades when recent PnL or CLV is not positive. Existing positions are still reconciled and checked for exits.
+- Adaptive risk, calibration learning, and the performance guard are optional and disabled by default. Enable them only after reviewing enough settled trades to prove they improve the bot rather than overfitting recent losses.
 - Crypto candidates now use `edge = adjusted_probability - executable_price - fee_haircut - slippage_penalty`. The adjusted probability starts from the crypto model/market blend and adds a capped Kalshi orderflow correction from recent public trades, large taker flow, top-of-book imbalance, and trade-price momentum.
 
 Current tightened crypto defaults favor cleaner fills:
@@ -231,23 +229,24 @@ BOT_ALLOWED_ASSETS=BTC,ETH,SOL
 BOT_MAX_SPREAD_DOLLARS=0.02
 BOT_MIN_TIME_TO_CLOSE_MINUTES=10
 BOT_MAX_TIME_TO_CLOSE_MINUTES=60
-BOT_CALIBRATION_ENABLED=true
-BOT_PERFORMANCE_GUARD_ENABLED=true
+BOT_ADAPTIVE_RISK_ENABLED=false
+BOT_CALIBRATION_ENABLED=false
+BOT_PERFORMANCE_GUARD_ENABLED=false
 BOT_SLIPPAGE_BASE_DOLLARS=0.01
 BOT_SLIPPAGE_SPREAD_FACTOR=0.25
 BOT_ORDERFLOW_ENABLED=true
 BOT_ORDERFLOW_MAX_PROBABILITY_ADJUSTMENT=0.04
 ```
 
-## Adaptive Risk Scaling
+## Optional Adaptive Risk Scaling
 
-The live scanner computes a rolling adaptive multiplier from recent realized trades before sizing new entries. It uses the last `BOT_ADAPTIVE_WINDOW_TRADES` realized orders, requires at least `BOT_ADAPTIVE_MIN_SETTLED_TRADES` final settled results before scaling up, and applies the multiplier to max position, max open risk, daily loss limit, bankroll-fraction sizing, and fractional Kelly sizing.
+When `BOT_ADAPTIVE_RISK_ENABLED=true`, the live scanner computes a rolling adaptive multiplier from recent realized trades before sizing new entries. It uses the last `BOT_ADAPTIVE_WINDOW_TRADES` realized orders, requires at least `BOT_ADAPTIVE_MIN_SETTLED_TRADES` final settled results before scaling up, and applies the multiplier to max position, max open risk, daily loss limit, bankroll-fraction sizing, and fractional Kelly sizing.
 
 The CLV field is currently a proxy: final settled trades use terminal contract value minus entry price, while early take-profit exits use exit price minus entry price. That is useful for sizing discipline, but it is not a true pre-close market-price snapshot.
 
 ## Learning Guardrails
 
-The bot does not retrain a black-box model in live mode. It uses simple, auditable learning controls:
+The bot does not retrain a black-box model in live mode. The default live path is current market data plus hard risk filters. Optional learning controls are available, but are disabled by default:
 
 - `BOT_CALIBRATION_*` computes per-asset probability bias from final settled results, then shifts future YES probabilities by a capped fraction of that bias.
 - `BOT_PERFORMANCE_GUARD_*` computes recent realized PnL and CLV by asset. Assets with enough recent trades and bad performance are blocked from new live buys until the rolling window improves.
@@ -276,7 +275,7 @@ For the hardened always-on server setup and cutover procedure, see
 2. Use settlement reconciliation so paper P&L is real, not theoretical.
 3. Build one domain model at a time, starting with markets where external data is clean.
 4. Compare model probability vs Kalshi executable price after fees.
-5. Use quarter-Kelly sizing only after the model is calibrated; until then keep the hard $1 cap.
+5. Use quarter-Kelly sizing only after the model is calibrated; until then keep hard caps small.
 6. Move from paper to demo, then to live with one $20 tranche only.
 
 The first real edge should come from independent probability models, not from LLM confidence alone.

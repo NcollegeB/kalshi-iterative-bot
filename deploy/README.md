@@ -63,8 +63,8 @@ sudo systemctl enable --now kalshi-dashboard.service
 sudo journalctl -u kalshi-dashboard.service -f
 ```
 
-To preserve the bot's performance guard, calibration history, and open-position
-ledger, copy the SQLite database from the Mac while the Mac bot is stopped:
+To preserve the bot's open-position ledger, realized P&L, and optional learning
+history, copy the SQLite database from the Mac while the Mac bot is stopped:
 
 ```bash
 # Run on the Mac.

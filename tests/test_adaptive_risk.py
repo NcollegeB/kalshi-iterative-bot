@@ -27,7 +27,7 @@ def row(
 
 
 def test_adaptive_risk_waits_for_enough_final_results():
-    config = RiskConfig(adaptive_min_settled_trades=3, adaptive_window_trades=5)
+    config = RiskConfig(adaptive_risk_enabled=True, adaptive_min_settled_trades=3, adaptive_window_trades=5)
     rows = [
         row(probability=0.7, outcome="yes", settlement_result="yes", price=0.5, net_pnl=0.5),
         row(probability=0.8, outcome="yes", settlement_result="yes", price=0.5, net_pnl=0.5),
@@ -42,6 +42,7 @@ def test_adaptive_risk_waits_for_enough_final_results():
 
 def test_adaptive_risk_steps_up_when_window_passes_checks():
     config = RiskConfig(
+        adaptive_risk_enabled=True,
         adaptive_min_settled_trades=3,
         adaptive_window_trades=5,
         adaptive_step_up=0.15,
@@ -63,6 +64,7 @@ def test_adaptive_risk_steps_up_when_window_passes_checks():
 
 def test_adaptive_risk_steps_down_when_calibration_fails():
     config = RiskConfig(
+        adaptive_risk_enabled=True,
         adaptive_min_settled_trades=3,
         adaptive_window_trades=5,
         adaptive_step_down=0.25,
@@ -84,6 +86,7 @@ def test_adaptive_risk_steps_down_when_calibration_fails():
 
 def test_adaptive_risk_steps_down_on_drawdown_before_full_sample():
     config = RiskConfig(
+        adaptive_risk_enabled=True,
         adaptive_min_settled_trades=20,
         adaptive_window_trades=20,
         adaptive_max_drawdown_dollars=1.0,
